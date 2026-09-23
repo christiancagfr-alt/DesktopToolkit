@@ -733,7 +733,8 @@ class ScreenRecorder:
             target=kwargs.get("target"),
             mic_idx=kwargs.get("mic_idx"),
             sys_idx=kwargs.get("sys_idx"),
-            fps=int(kwargs.get("fps") or 30),
+            # 20fps is more reliable than 30 on heavy desktops (keeps A/V duration aligned)
+            fps=int(kwargs.get("fps") or 20),
             resolution=str(kwargs.get("resolution") or "1080p"),
             highlight_cursor=bool(kwargs.get("highlight_cursor", True)),
             cursor_color_bgr=kwargs.get("cursor_color_bgr", (0, 255, 255)),
@@ -931,18 +932,33 @@ class ScreenRecorder:
 
         frame_delay = 1.0 / max(1, self.cfg.fps)
         frames = 0
+        last_frame = None
+        # Absolute pacing: keep video wall-clock duration ≈ audio duration.
+        # If capture is slow, duplicate the last frame so muxed video isn't "sped up".
+        next_t = time.perf_counter()
         while self.is_recording:
-            t0 = time.time()
             self._update_duration()
             if self.is_paused:
                 time.sleep(0.05)
+                # Freeze schedule while paused so resume stays in sync
+                next_t = time.perf_counter()
+                continue
+
+            now = time.perf_counter()
+            if now < next_t:
+                time.sleep(min(0.05, next_t - now))
                 continue
 
             region = resolve_region(self.cfg.target)
             frame = capture_bgr(region)
             if frame is None:
-                time.sleep(0.02)
-                continue
+                # Still advance schedule with last good frame if we have one
+                if last_frame is not None:
+                    frame = last_frame
+                else:
+                    next_t += frame_delay
+                    time.sleep(0.01)
+                    continue
 
             # Overlay annotations
             if self.cfg.overlay_provider:
@@ -963,15 +979,29 @@ class ScreenRecorder:
             if frame.shape[1] != tw or frame.shape[0] != th:
                 frame = cv2.resize(frame, (tw, th), interpolation=cv2.INTER_AREA)
 
-            # Write
-            try:
-                if self._ffmpeg and self._ffmpeg.stdin:
-                    self._ffmpeg.stdin.write(frame.tobytes())
-                elif writer is not None:
-                    writer.write(frame)
-                frames += 1
-            except Exception as exc:
-                self._error = f"写帧失败: {exc}"
+            last_frame = frame
+            # Catch up: write this frame once, then pad duplicates if we're late
+            catchup = 0
+            while True:
+                try:
+                    if self._ffmpeg and self._ffmpeg.stdin:
+                        self._ffmpeg.stdin.write(frame.tobytes())
+                    elif writer is not None:
+                        writer.write(frame)
+                    frames += 1
+                except Exception as exc:
+                    self._error = f"写帧失败: {exc}"
+                    break
+                next_t += frame_delay
+                catchup += 1
+                # At most ~0.5s of duplicates per capture (avoid spiral)
+                if catchup >= max(1, int(self.cfg.fps // 2)):
+                    next_t = time.perf_counter()
+                    break
+                if next_t >= time.perf_counter() - frame_delay * 0.25:
+                    break
+                # Keep padding with same frame so timeline matches wall clock
+            if self._error:
                 break
 
             # Preview ~4 fps (enough for HUD, less UI contention while recording)
@@ -982,9 +1012,6 @@ class ScreenRecorder:
                     self.cfg.preview_cb(small)
                 except Exception:
                     pass
-
-            elapsed = time.time() - t0
-            time.sleep(max(0.0, frame_delay - elapsed))
 
         if writer is not None:
             writer.release()
@@ -1023,6 +1050,9 @@ def fast_mux(video_path: str, audio_path: str | None, output_path: str) -> bool:
                 "aac",
                 "-b:a",
                 "192k",
+                # Prefer video timeline; avoid cutting audio short when lengths differ slightly
+                "-af",
+                "apad",
                 "-shortest",
                 "-movflags",
                 "+faststart",

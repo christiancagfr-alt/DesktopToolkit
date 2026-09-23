@@ -43,6 +43,7 @@ class FloatingAssistant(QWidget):
         super().__init__(parent)
         self.host = host
         self._drag = False
+        self._drag_moved = False
         self._drag_offset = QPoint()
         self._menu_visible = False
         self.setWindowTitle("Toolkit Assistant")
@@ -62,6 +63,8 @@ class FloatingAssistant(QWidget):
         self.icon_lbl.setStyleSheet(
             "QLabel { background: transparent; border: none; }"
         )
+        # Let press/move/release hit the parent so drag works (label otherwise eats events)
+        self.icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         path = robot_icon_path()
         if path.is_file():
             pix = QPixmap(str(path))
@@ -274,31 +277,52 @@ class FloatingAssistant(QWidget):
     def mousePressEvent(self, e: QMouseEvent) -> None:
         if e.button() == Qt.MouseButton.LeftButton:
             self._drag = True
+            self._drag_moved = False
             self._drag_offset = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
             # Hide menu while dragging so it doesn't steal mouse moves
             self.menu.hide()
             self._menu_visible = False
             self._hide_timer.stop()
+            self.grabMouse()
+            e.accept()
+            return
+        super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e: QMouseEvent) -> None:
         if self._drag and e.buttons() & Qt.MouseButton.LeftButton:
-            self.move(e.globalPosition().toPoint() - self._drag_offset)
+            dest = e.globalPosition().toPoint() - self._drag_offset
+            if (dest - self.pos()).manhattanLength() > 2:
+                self._drag_moved = True
+            self.move(dest)
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e: QMouseEvent) -> None:
         if self._drag:
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
             # Snap into visible area and remember
             p = self._clamp_to_screens(self.x(), self.y())
             self.move(p)
             self._save_pos()
+            moved = bool(getattr(self, "_drag_moved", False))
             self._drag = False
+            self._drag_moved = False
             self._reassert_topmost()
             # Re-open hover menu after a finished drag if cursor still on logo
-            if self.frameGeometry().contains(QCursor.pos()):
+            if moved and self.frameGeometry().contains(QCursor.pos()):
                 self._show_menu()
+            e.accept()
+            return
         self._drag = False
+        super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e: QMouseEvent) -> None:
         self._act_hub()
+        e.accept()
 
     # --- actions ---
     def _tip(self, msg: str) -> None:

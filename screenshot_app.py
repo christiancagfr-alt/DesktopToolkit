@@ -2109,6 +2109,7 @@ class ScreenshotEditor(QWidget):
 # Keep pinned windows alive
 _PINNED_REFS: list[PinnedShot] = []
 _EDITOR_REF: ScreenshotEditor | None = None
+_SHOT_TOKEN = 0  # coalesce rapid hotkeys: only the latest request runs
 
 
 def _parse_upload_result(result) -> tuple[str, str]:
@@ -2228,23 +2229,54 @@ def start_screenshot(
     state: dict | None = None,
     on_done: Callable[[QImage | None], None] | None = None,
 ) -> ScreenshotEditor | None:
-    """Launch capture+editor. mode: region | full."""
-    global _EDITOR_REF
+    """Launch capture+editor. mode: region | full.
+
+    Rapid hotkey presses coalesce: only the *latest* request runs (previous
+    pending timers and an unfinished editor are discarded).
+    """
+    global _EDITOR_REF, _SHOT_TOKEN
     cfg = {}
     if isinstance(state, dict):
         cfg = state.setdefault("screenshot", {})
 
-    # brief delay so menus close
     app = QApplication.instance()
     if app is None:
         return None
 
+    # Invalidate any earlier queued launches
+    _SHOT_TOKEN += 1
+    token = _SHOT_TOKEN
+
+    # Close an existing editor still open (avoids stacking / freeze)
+    prev = _EDITOR_REF
+    if prev is not None:
+        try:
+            prev.close()
+        except Exception:
+            pass
+        try:
+            prev.deleteLater()
+        except Exception:
+            pass
+        _EDITOR_REF = None
+
     def _run() -> None:
         global _EDITOR_REF
+        # Superseded by a newer hotkey press
+        if token != _SHOT_TOKEN:
+            return
         try:
             bg, geo = capture_virtual_desktop()
         except Exception as e:
-            QMessageBox.warning(None, "截图失败", str(e))
+            if token == _SHOT_TOKEN:
+                QMessageBox.warning(None, "截图失败", str(e))
+                if on_done:
+                    try:
+                        on_done(None)
+                    except Exception:
+                        pass
+            return
+        if token != _SHOT_TOKEN:
             return
 
         def do_upload(path: Path) -> dict:
@@ -2291,23 +2323,37 @@ def start_screenshot(
             # Secrets present but upload disabled — soft hint only when user hits upload
             upload_block_reason = "云端未启用：请在截图设置勾选「启用 Google 云端上传」并连接"
 
+        if token != _SHOT_TOKEN:
+            return
+
         ed = ScreenshotEditor(bg, geo, mode=mode, cfg=cfg, on_upload=on_upload)
         if upload_block_reason and not on_upload:
             ed._upload_block_reason = upload_block_reason
         _EDITOR_REF = ed
 
         def _fin(img):
+            global _EDITOR_REF
             if on_done:
                 on_done(img)
             # keep pins
             for pin in ed._pinned:
                 _PINNED_REFS.append(pin)
+            if _EDITOR_REF is ed:
+                _EDITOR_REF = None
 
         ed.finished.connect(_fin)
+        ed.destroyed.connect(lambda *_: _clear_editor_ref(ed))
         ed.show()
         ed.raise_()
         ed.activateWindow()
         ed.setFocus()
 
-    QTimer.singleShot(120, _run)
+    # brief delay so menus close; token ensures only latest hotkey wins
+    QTimer.singleShot(80, _run)
     return None
+
+
+def _clear_editor_ref(ed) -> None:
+    global _EDITOR_REF
+    if _EDITOR_REF is ed:
+        _EDITOR_REF = None

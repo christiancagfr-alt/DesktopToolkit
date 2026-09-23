@@ -347,12 +347,23 @@ class ToolkitApp(QObject):
     def start_screenshot_region(self) -> None:
         from screenshot_app import start_screenshot
 
-        start_screenshot(mode="region", state=self.store.state)
+        # Pause global shot hotkeys while a capture is pending/open (avoids stacked freezes)
+        self.pause_screenshot_hotkeys()
+
+        def _done(_img) -> None:
+            self.resume_screenshot_hotkeys()
+
+        start_screenshot(mode="region", state=self.store.state, on_done=_done)
 
     def start_screenshot_full(self) -> None:
         from screenshot_app import start_screenshot
 
-        start_screenshot(mode="full", state=self.store.state)
+        self.pause_screenshot_hotkeys()
+
+        def _done(_img) -> None:
+            self.resume_screenshot_hotkeys()
+
+        start_screenshot(mode="full", state=self.store.state, on_done=_done)
 
     def rebind_screenshot_hotkeys(self) -> str:
         sc = self.store.state.setdefault("screenshot", {})

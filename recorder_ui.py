@@ -748,10 +748,12 @@ class FloatingRecorderBoard(QWidget):
         self.spin_fps = QSpinBox()
         # 12–60: common capture rates (24 film / 30 / 60 smooth); higher = larger files
         self.spin_fps.setRange(12, 60)
-        self.spin_fps.setValue(30)
+        self.spin_fps.setValue(20)
         self.spin_fps.setSingleStep(1)
         self.spin_fps.setSuffix(" fps")
-        self.spin_fps.setToolTip("帧率 12–60（常用 24/30/60；越高越流畅，文件也更大）")
+        self.spin_fps.setToolTip(
+            "帧率 12–60（推荐 20：音画更易同步；24/30 更流畅但电脑吃力时可能画面偏快）"
+        )
         form.addWidget(self.spin_fps, 0, 3)
 
         form.addWidget(QLabel("录制目标"), 1, 0)
@@ -914,7 +916,7 @@ class FloatingRecorderBoard(QWidget):
         if cfg.get("resolution") == "720p":
             self.cmb_res.setCurrentIndex(1)
         try:
-            self.spin_fps.setValue(int(cfg.get("fps") or 30))
+            self.spin_fps.setValue(int(cfg.get("fps") or 20))
         except Exception:
             pass
         if cfg.get("cursor_color"):
