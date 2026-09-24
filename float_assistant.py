@@ -54,7 +54,7 @@ class FloatingAssistant(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFixedSize(78, 78)
-        self.setToolTip("可拖动到任意位置 · 双击打开主界面 · 悬停显示快捷菜单")
+        self.setToolTip("拖动移动 · 单击打开/关闭菜单 · 双击打开主界面")
 
         # Pure transparent — no circle, no white plate
         self.icon_lbl = QLabel(self)
@@ -235,25 +235,30 @@ class FloatingAssistant(QWidget):
 
     def _position_menu(self) -> None:
         self.menu.adjustSize()
-        # Open upward-left from logo
+        # Prefer above the logo; if near top of screen, open below so it stays visible
         x = self.x() + self.width() - self.menu.width()
-        y = self.y() - self.menu.height() - 8
+        y_above = self.y() - self.menu.height() - 8
+        y_below = self.y() + self.height() + 8
         scr = QGuiApplication.primaryScreen()
+        # Prefer the screen that contains the logo
+        for s in QGuiApplication.screens() or []:
+            if s.availableGeometry().contains(self.frameGeometry().center()):
+                scr = s
+                break
         if scr:
             g = scr.availableGeometry()
             x = max(g.left() + 8, min(x, g.right() - self.menu.width() - 8))
-            y = max(g.top() + 8, y)
+            if y_above >= g.top() + 8:
+                y = y_above
+            else:
+                y = min(y_below, g.bottom() - self.menu.height() - 8)
+                y = max(g.top() + 8, y)
+        else:
+            y = y_above if y_above > 0 else y_below
         self.menu.move(x, y)
 
-    def enterEvent(self, event) -> None:  # type: ignore[override]
-        self._show_menu()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:  # type: ignore[override]
-        self._hide_timer.start(280)
-        super().leaveEvent(event)
-
     def _show_menu(self) -> None:
+        """Open shortcut menu (click-triggered, not hover)."""
         self._hide_timer.stop()
         self._position_menu()
         self.menu.show()
@@ -261,28 +266,37 @@ class FloatingAssistant(QWidget):
         force_topmost(self)
         force_topmost(self.menu)
         self._menu_visible = True
-        # Keep menu open while cursor is on menu
+        # Auto-hide only when leaving the menu itself (not when hovering the logo)
         self.menu.enterEvent = lambda e: self._hide_timer.stop()  # type: ignore
-        self.menu.leaveEvent = lambda e: self._hide_timer.start(220)  # type: ignore
+        self.menu.leaveEvent = lambda e: self._hide_timer.start(320)  # type: ignore
+
+    def _hide_menu(self) -> None:
+        self._hide_timer.stop()
+        self.menu.hide()
+        self._menu_visible = False
+
+    def _toggle_menu(self) -> None:
+        if self.menu.isVisible():
+            self._hide_menu()
+        else:
+            self._show_menu()
 
     def _maybe_hide_menu(self) -> None:
         pos = QCursor.pos()
-        if self.frameGeometry().contains(pos):
-            return
         if self.menu.isVisible() and self.menu.frameGeometry().contains(pos):
             return
-        self.menu.hide()
-        self._menu_visible = False
+        # Keep open if cursor returned to the logo (user may click again)
+        if self.frameGeometry().contains(pos):
+            return
+        self._hide_menu()
 
     def mousePressEvent(self, e: QMouseEvent) -> None:
         if e.button() == Qt.MouseButton.LeftButton:
             self._drag = True
             self._drag_moved = False
             self._drag_offset = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            # Hide menu while dragging so it doesn't steal mouse moves
-            self.menu.hide()
-            self._menu_visible = False
-            self._hide_timer.stop()
+            # Hide menu while dragging so it never blocks move
+            self._hide_menu()
             self.grabMouse()
             e.accept()
             return
@@ -291,7 +305,7 @@ class FloatingAssistant(QWidget):
     def mouseMoveEvent(self, e: QMouseEvent) -> None:
         if self._drag and e.buttons() & Qt.MouseButton.LeftButton:
             dest = e.globalPosition().toPoint() - self._drag_offset
-            if (dest - self.pos()).manhattanLength() > 2:
+            if (dest - self.pos()).manhattanLength() > 3:
                 self._drag_moved = True
             self.move(dest)
             e.accept()
@@ -312,15 +326,16 @@ class FloatingAssistant(QWidget):
             self._drag = False
             self._drag_moved = False
             self._reassert_topmost()
-            # Re-open hover menu after a finished drag if cursor still on logo
-            if moved and self.frameGeometry().contains(QCursor.pos()):
-                self._show_menu()
+            # Click (no drag) → toggle menu; drag → only move
+            if not moved and e.button() == Qt.MouseButton.LeftButton:
+                self._toggle_menu()
             e.accept()
             return
         self._drag = False
         super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e: QMouseEvent) -> None:
+        self._hide_menu()
         self._act_hub()
         e.accept()
 
