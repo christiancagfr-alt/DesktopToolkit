@@ -82,10 +82,11 @@ class FileOrganizerWindow(QMainWindow):
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("分类方式"))
         self.cmb_mode = QComboBox()
+        self.cmb_mode.addItem("自定义分段（按 - 或 _ 某一段归类）", "custom")
         self.cmb_mode.addItem("前缀（去掉末尾序号）", "prefix")
         self.cmb_mode.addItem("日期（文件名中的日期）", "date")
         self.cmb_mode.addItem("文件类型 / 扩展名", "ext")
-        self.cmb_mode.addItem("自定义分段（按 - 或 _ 某一段归类）", "custom")
+        self.cmb_mode.setCurrentIndex(0)  # default: custom
         self.cmb_mode.currentIndexChanged.connect(self._sync_custom_enabled)
         mode_row.addWidget(self.cmb_mode, 1)
         lay.addLayout(mode_row)
@@ -183,7 +184,7 @@ class FileOrganizerWindow(QMainWindow):
 
     def _options(self) -> OrganizeOptions:
         return OrganizeOptions(
-            mode=str(self.cmb_mode.currentData() or "prefix"),
+            mode=str(self.cmb_mode.currentData() or "custom"),
             recursive=bool(self.chk_recursive.isChecked()),
             min_group_size=2 if self.chk_min2.isChecked() else 1,
             friendly_types=bool(self.chk_friendly.isChecked()),

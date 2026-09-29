@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -170,7 +171,7 @@ def get_capture_targets() -> list[dict]:
 
 
 def get_audio_devices() -> tuple[list[dict], list[dict]]:
-    """Return (mics, system_loopback_candidates)."""
+    """Return (mics, system_loopback_candidates). Prefer MME/WASAPI Realtek over mapper/BT HF."""
     mics: list[dict] = []
     systems: list[dict] = []
     try:
@@ -180,10 +181,16 @@ def get_audio_devices() -> tuple[list[dict], list[dict]]:
                 continue
             name = str(d.get("name") or f"Device {idx}")
             try:
-                host = sd.query_hostapis(d["hostapi"])["name"]
+                host = str(sd.query_hostapis(d["hostapi"])["name"] or "")
             except Exception:
                 host = ""
-            item = {"index": idx, "name": f"{name} ({host})" if host else name}
+            rate = float(d.get("default_samplerate") or 0)
+            item = {
+                "index": idx,
+                "name": f"{name} ({host})" if host else name,
+                "host": host,
+                "rate": rate,
+            }
             name_l = name.lower()
             if any(
                 k in name_l
@@ -200,7 +207,29 @@ def get_audio_devices() -> tuple[list[dict], list[dict]]:
             ):
                 systems.append(item)
             else:
+                # Skip broken ultra-low-rate Bluetooth hands-free capture endpoints
+                if rate and rate < 16000 and ("hands-free" in name_l or "ag audio" in name_l or "bthhf" in name_l):
+                    continue
                 mics.append(item)
+
+        def _rank(item: dict) -> tuple:
+            host = str(item.get("host") or "").lower()
+            name = str(item.get("name") or "").lower()
+            # Prefer MME / WASAPI Realtek mic; demote mapper / primary driver aliases
+            host_score = 0
+            if "mme" in host:
+                host_score = 0
+            elif "wasapi" in host:
+                host_score = 1
+            elif "directsound" in host:
+                host_score = 2
+            else:
+                host_score = 3
+            alias = 1 if any(k in name for k in ("sound mapper", "主声音捕获", "primary")) else 0
+            return (alias, host_score, name)
+
+        mics.sort(key=_rank)
+        systems.sort(key=_rank)
     except Exception as exc:
         print(f"audio device query failed: {exc}", flush=True)
     return mics, systems
@@ -558,44 +587,54 @@ class AudioRecorder:
         self.wav_file = None
         self.write_thread = None
 
+    def _open_input(self, device_idx: int, put_q: queue.Queue) -> tuple[object | None, int | None]:
+        """Open an input stream; try device-native rate/channels before falling back."""
+        info = {}
+        try:
+            info = sd.query_devices(device_idx) or {}
+        except Exception:
+            pass
+        max_ch = max(1, min(2, int(info.get("max_input_channels") or 1)))
+        native_rate = int(float(info.get("default_samplerate") or self.sample_rate) or self.sample_rate)
+        rates = []
+        for r in (self.sample_rate, native_rate, 48000, 44100, 16000):
+            if r and r not in rates:
+                rates.append(int(r))
+        last_err = ""
+        for rate in rates:
+            for ch in (max_ch, 1, 2):
+                if ch > max_ch:
+                    continue
+                try:
+                    def cb(data, frames, t, status, _q=put_q):
+                        if not self.is_paused:
+                            _q.put(data.copy())
+
+                    stream = sd.InputStream(
+                        device=device_idx,
+                        channels=ch,
+                        samplerate=rate,
+                        blocksize=1024,
+                        callback=cb,
+                    )
+                    stream.start()
+                    # Keep writer sample rate aligned with the first successful stream
+                    self.sample_rate = rate
+                    return stream, device_idx
+                except Exception as e:
+                    last_err = str(e)
+                    continue
+        print(f"audio open failed device={device_idx}: {last_err}", flush=True)
+        return None, None
+
     def start(self) -> None:
         self.is_recording = True
         self.is_paused = False
         if self.mic_idx is not None:
-            try:
-                def cb(data, frames, t, status):
-                    if not self.is_paused:
-                        self.q_mic.put(data.copy())
-
-                self.stream_mic = sd.InputStream(
-                    device=self.mic_idx, channels=1, samplerate=self.sample_rate, callback=cb
-                )
-                self.stream_mic.start()
-            except Exception as e:
-                print(f"mic failed: {e}", flush=True)
-                self.mic_idx = None
-                self.stream_mic = None
+            self.stream_mic, self.mic_idx = self._open_input(int(self.mic_idx), self.q_mic)
 
         if self.sys_idx is not None:
-            try:
-                def cb(data, frames, t, status):
-                    if not self.is_paused:
-                        self.q_sys.put(data.copy())
-
-                ch = 2
-                try:
-                    info = sd.query_devices(self.sys_idx)
-                    ch = min(2, max(1, int(info.get("max_input_channels") or 2)))
-                except Exception:
-                    pass
-                self.stream_sys = sd.InputStream(
-                    device=self.sys_idx, channels=ch, samplerate=self.sample_rate, callback=cb
-                )
-                self.stream_sys.start()
-            except Exception as e:
-                print(f"system audio failed: {e}", flush=True)
-                self.sys_idx = None
-                self.stream_sys = None
+            self.stream_sys, self.sys_idx = self._open_input(int(self.sys_idx), self.q_sys)
 
         if self.mic_idx is not None or self.sys_idx is not None:
             self.wav_file = wave.open(self.output_wav_path, "wb")
@@ -604,6 +643,8 @@ class AudioRecorder:
             self.wav_file.setframerate(self.sample_rate)
             self.write_thread = threading.Thread(target=self._write_loop, daemon=True)
             self.write_thread.start()
+        else:
+            print("audio recorder: no usable mic/system device", flush=True)
 
     def _write_loop(self) -> None:
         while self.is_recording or not self.q_mic.empty() or not self.q_sys.empty():
@@ -833,6 +874,7 @@ class ScreenRecorder:
         out.parent.mkdir(parents=True, exist_ok=True)
         has_audio = os.path.exists(self.temp_audio) and os.path.getsize(self.temp_audio) > 44
         has_video = os.path.exists(self.temp_video) and os.path.getsize(self.temp_video) > 1000
+        wanted_audio = self.cfg.mic_idx is not None or self.cfg.sys_idx is not None
 
         if not has_video:
             self._cleanup_temp()
@@ -841,6 +883,25 @@ class ScreenRecorder:
         ok = fast_mux(self.temp_video, self.temp_audio if has_audio else None, str(out))
         self._cleanup_temp()
         if ok and out.exists():
+            # Confirm audio track actually landed in the file
+            has_a = False
+            try:
+                r = subprocess.run(
+                    [_ffmpeg_bin(), "-i", str(out)],
+                    capture_output=True,
+                    timeout=20,
+                    **_silent_subprocess_kwargs(),
+                )
+                text = (r.stderr or b"").decode("utf-8", errors="replace")
+                has_a = "Audio:" in text
+            except Exception:
+                has_a = has_audio
+            if wanted_audio and not has_audio:
+                return f"已保存（无声音：麦克风/系统声未能采集到）：{out}"
+            if has_audio and not has_a:
+                return f"已保存（画面成功，音轨封装失败）：{out}"
+            if has_a:
+                return f"已保存（含声音）：{out}"
             return f"已保存：{out}"
         return f"保存失败（{self._error or 'mux error'}）"
 
@@ -1032,56 +1093,173 @@ class ScreenRecorder:
             self._error = "未捕获到任何画面"
 
 
+def _probe_duration_seconds(path: str) -> float | None:
+    """Best-effort media duration via ffmpeg -i stderr (no ffprobe required)."""
+    try:
+        r = subprocess.run(
+            [_ffmpeg_bin(), "-i", path],
+            capture_output=True,
+            timeout=20,
+            **_silent_subprocess_kwargs(),
+        )
+        text = (r.stderr or b"").decode("utf-8", errors="replace")
+        m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+        if not m:
+            return None
+        h, mi, s = int(m.group(1)), int(m.group(2)), float(m.group(3))
+        return h * 3600 + mi * 60 + s
+    except Exception:
+        return None
+
+
+def _run_ffmpeg(cmd: list[str], *, timeout: int = 60) -> tuple[bool, str]:
+    try:
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=timeout,
+            **_silent_subprocess_kwargs(),
+        )
+        err = (r.stderr or b"").decode("utf-8", errors="replace")[-800:]
+        ok = r.returncode == 0 and os.path.exists(cmd[-1])
+        return ok, err
+    except subprocess.TimeoutExpired:
+        return False, "ffmpeg timed out"
+    except Exception as exc:
+        return False, str(exc)
+
+
 def fast_mux(video_path: str, audio_path: str | None, output_path: str) -> bool:
-    """Mux with stream copy for video — nearly instant."""
+    """Mux with stream-copy video. Avoid infinite apad (hangs + silent audio drop)."""
     ffmpeg = _ffmpeg_bin()
     try:
-        if audio_path and os.path.exists(audio_path) and os.path.getsize(audio_path) > 44:
-            cmd = [
+        has_audio = bool(
+            audio_path and os.path.exists(audio_path) and os.path.getsize(audio_path) > 44
+        )
+        if not has_audio:
+            ok, _ = _run_ffmpeg(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    video_path,
+                    "-c:v",
+                    "copy",
+                    "-an",
+                    "-movflags",
+                    "+faststart",
+                    output_path,
+                ]
+            )
+            if ok:
+                return True
+            shutil.copy2(video_path, output_path)
+            return os.path.exists(output_path)
+
+        # 1) Prefer finite pad to video length (keeps A/V length close without hanging).
+        #    Bare `-af apad` pads forever and with `-c:v copy` often never ends → timeout
+        #    then old code fell back to video-only (有画面没声音).
+        vdur = _probe_duration_seconds(video_path)
+        attempts: list[list[str]] = []
+        if vdur and vdur > 0.05:
+            attempts.append(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    video_path,
+                    "-i",
+                    str(audio_path),
+                    "-c:v",
+                    "copy",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-af",
+                    f"apad=whole_dur={vdur:.3f}",
+                    "-t",
+                    f"{vdur:.3f}",
+                    "-movflags",
+                    "+faststart",
+                    output_path,
+                ]
+            )
+        # 2) Simple shortest mux (no pad) — reliable and fast
+        attempts.append(
+            [
                 ffmpeg,
                 "-y",
                 "-i",
                 video_path,
                 "-i",
-                audio_path,
+                str(audio_path),
                 "-c:v",
                 "copy",
                 "-c:a",
                 "aac",
                 "-b:a",
                 "192k",
-                # Prefer video timeline; avoid cutting audio short when lengths differ slightly
-                "-af",
-                "apad",
                 "-shortest",
                 "-movflags",
                 "+faststart",
                 output_path,
             ]
-        else:
-            cmd = [
+        )
+        # 3) Last resort: re-encode video too (still keep audio)
+        attempts.append(
+            [
                 ffmpeg,
                 "-y",
                 "-i",
                 video_path,
+                "-i",
+                str(audio_path),
                 "-c:v",
-                "copy",
-                "-an",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
                 "-movflags",
                 "+faststart",
                 output_path,
             ]
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=120,
-            **_silent_subprocess_kwargs(),
         )
-        if r.returncode == 0 and os.path.exists(output_path):
-            return True
-        # fallback copy video only
-        shutil.copy2(video_path, output_path)
-        return os.path.exists(output_path)
+
+        last_err = ""
+        for cmd in attempts:
+            try:
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+            except Exception:
+                pass
+            ok, last_err = _run_ffmpeg(cmd, timeout=90)
+            if ok:
+                # Sanity: refuse "success" that dropped the audio track
+                probe = subprocess.run(
+                    [ffmpeg, "-i", output_path],
+                    capture_output=True,
+                    timeout=20,
+                    **_silent_subprocess_kwargs(),
+                )
+                text = (probe.stderr or b"").decode("utf-8", errors="replace")
+                if "Audio:" in text:
+                    return True
+                last_err = "mux output missing audio stream"
+                print(f"mux missing audio, retry: {last_err}", flush=True)
+
+        print(f"mux failed (keeping video only as last resort): {last_err}", flush=True)
+        try:
+            shutil.copy2(video_path, output_path)
+            return os.path.exists(output_path)
+        except Exception:
+            return False
     except Exception as exc:
         print(f"mux failed: {exc}", flush=True)
         try:

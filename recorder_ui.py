@@ -646,10 +646,14 @@ class FloatingRecorderBoard(QWidget):
 
         self.preview_timer.start(750 if _sys.platform == "darwin" else 500)
 
+        self._loading_settings = True
         self._init_ui()
         self._load_settings()
         self._refresh_targets()
         self._refresh_audio()
+        self._restore_selection()
+        self._wire_settings_persist()
+        self._loading_settings = False
 
     def _cfg(self) -> dict:
         return self.state.setdefault("recorder", {})
@@ -770,7 +774,7 @@ class FloatingRecorderBoard(QWidget):
         self.cmb_filter.addItem("仅显示器", "screen")
         self.cmb_filter.addItem("仅窗口/软件", "window")
         self.cmb_filter.addItem("仅浏览器", "browser")
-        self.cmb_filter.currentIndexChanged.connect(self._refresh_targets)
+        # persist wiring connects filter → refresh + save (see _wire_settings_persist)
         form.addWidget(self.cmb_filter, 2, 1, 1, 3)
 
         form.addWidget(QLabel("麦克风"), 3, 0)
@@ -910,30 +914,165 @@ class FloatingRecorderBoard(QWidget):
         root.addWidget(box)
 
     def _load_settings(self) -> None:
+        """Restore remembered recorder UI options (except live device/target lists)."""
         cfg = self._cfg()
         if cfg.get("save_dir"):
             self.txt_save_dir.setText(str(cfg["save_dir"]))
-        if cfg.get("resolution") == "720p":
-            self.cmb_res.setCurrentIndex(1)
+
+        res = str(cfg.get("resolution") or "1080p")
+        idx = self.cmb_res.findData(res)
+        if idx >= 0:
+            self.cmb_res.setCurrentIndex(idx)
+
         try:
             self.spin_fps.setValue(int(cfg.get("fps") or 20))
         except Exception:
             pass
+
+        filt = str(cfg.get("filter") or "all")
+        fidx = self.cmb_filter.findData(filt)
+        if fidx >= 0:
+            self.cmb_filter.blockSignals(True)
+            self.cmb_filter.setCurrentIndex(fidx)
+            self.cmb_filter.blockSignals(False)
+
+        if "highlight_cursor" in cfg:
+            self.chk_cursor.setChecked(bool(cfg.get("highlight_cursor")))
         if cfg.get("cursor_color"):
             self._cursor_color = QColor(str(cfg["cursor_color"]))
         try:
             self.slider_cursor.setValue(int(cfg.get("cursor_radius") or 24))
         except Exception:
             pass
+
+        brush = str(cfg.get("brush_color") or "")
+        if brush:
+            bidx = self.cmb_brush.findText(brush)
+            if bidx >= 0:
+                self.cmb_brush.setCurrentIndex(bidx)
+            if getattr(self, "control_bar", None):
+                cidx = self.control_bar.cmb_brush.findText(brush)
+                if cidx >= 0:
+                    self.control_bar.cmb_brush.setCurrentIndex(cidx)
+        try:
+            self.slider_brush.setValue(int(cfg.get("brush_size") or 8))
+        except Exception:
+            pass
+
         self._update_cursor_btn()
 
+    def _restore_selection(self) -> None:
+        """Match previously saved target / mic / system devices after list refresh."""
+        cfg = self._cfg()
+
+        # Target: prefer kind+title, then title alone
+        want_title = str(cfg.get("target_title") or "")
+        want_kind = str(cfg.get("target_kind") or "")
+        want_hwnd = int(cfg.get("target_hwnd") or 0)
+        if want_title or want_hwnd:
+            best = -1
+            for i in range(self.cmb_target.count()):
+                data = self.cmb_target.itemData(i)
+                if not isinstance(data, dict):
+                    continue
+                title = str(data.get("title") or "")
+                kind = str(data.get("kind") or "")
+                hwnd = int(data.get("hwnd") or 0)
+                if want_hwnd and hwnd and hwnd == want_hwnd:
+                    best = i
+                    break
+                if want_title and title == want_title and (not want_kind or kind == want_kind):
+                    best = i
+                    break
+                if best < 0 and want_title and title == want_title:
+                    best = i
+            if best >= 0:
+                self.cmb_target.setCurrentIndex(best)
+
+        def _pick_device(combo: QComboBox, name_key: str, idx_key: str) -> None:
+            name = str(cfg.get(name_key) or "")
+            raw_idx = cfg.get(idx_key, None)
+            if name:
+                for i in range(combo.count()):
+                    if combo.itemText(i) == name:
+                        combo.setCurrentIndex(i)
+                        return
+            if raw_idx is None:
+                return
+            # None means "不录制"
+            if raw_idx == "" or raw_idx is False:
+                combo.setCurrentIndex(0)
+                return
+            try:
+                want = int(raw_idx)
+            except Exception:
+                return
+            for i in range(combo.count()):
+                data = combo.itemData(i)
+                if data is not None and int(data) == want:
+                    combo.setCurrentIndex(i)
+                    return
+
+        _pick_device(self.cmb_mic, "mic_name", "mic_index")
+        _pick_device(self.cmb_sys, "sys_name", "sys_index")
+
+    def _wire_settings_persist(self) -> None:
+        """Auto-save when the user changes remembered options."""
+        self.cmb_res.currentIndexChanged.connect(self._on_settings_changed)
+        self.spin_fps.valueChanged.connect(self._on_settings_changed)
+        self.cmb_filter.currentIndexChanged.connect(self._on_filter_changed)
+        self.cmb_target.currentIndexChanged.connect(self._on_settings_changed)
+        self.cmb_mic.currentIndexChanged.connect(self._on_settings_changed)
+        self.cmb_sys.currentIndexChanged.connect(self._on_settings_changed)
+        self.chk_cursor.stateChanged.connect(self._on_settings_changed)
+        self.slider_cursor.valueChanged.connect(self._on_settings_changed)
+        self.cmb_brush.currentIndexChanged.connect(self._on_settings_changed)
+        self.slider_brush.valueChanged.connect(self._on_settings_changed)
+        self.txt_save_dir.editingFinished.connect(self._on_settings_changed)
+
+    def _on_filter_changed(self) -> None:
+        self._refresh_targets()
+        self._on_settings_changed()
+
+    def _on_settings_changed(self, *_args) -> None:
+        if getattr(self, "_loading_settings", False):
+            return
+        self._save_settings()
+
     def _save_settings(self) -> None:
+        if getattr(self, "_loading_settings", False):
+            return
         cfg = self._cfg()
         cfg["save_dir"] = self.txt_save_dir.text().strip()
         cfg["resolution"] = self.cmb_res.currentData() or "1080p"
         cfg["fps"] = int(self.spin_fps.value())
+        cfg["filter"] = self.cmb_filter.currentData() or "all"
+        cfg["highlight_cursor"] = bool(self.chk_cursor.isChecked())
         cfg["cursor_color"] = self._cursor_color.name()
         cfg["cursor_radius"] = int(self.slider_cursor.value())
+        cfg["brush_color"] = self.cmb_brush.currentText() or "红色"
+        cfg["brush_size"] = int(self.slider_brush.value())
+
+        target = self._current_target()
+        if isinstance(target, dict):
+            cfg["target_title"] = str(target.get("title") or "")
+            cfg["target_kind"] = str(target.get("kind") or "")
+            try:
+                cfg["target_hwnd"] = int(target.get("hwnd") or 0)
+            except Exception:
+                cfg["target_hwnd"] = 0
+        else:
+            cfg["target_title"] = ""
+            cfg["target_kind"] = ""
+            cfg["target_hwnd"] = 0
+
+        mic = self.cmb_mic.currentData()
+        cfg["mic_name"] = self.cmb_mic.currentText() if mic is not None else ""
+        cfg["mic_index"] = None if mic is None else int(mic)
+        sysa = self.cmb_sys.currentData()
+        cfg["sys_name"] = self.cmb_sys.currentText() if sysa is not None else ""
+        cfg["sys_index"] = None if sysa is None else int(sysa)
+
         try:
             if self.callbacks and hasattr(self.callbacks, "save_state"):
                 self.callbacks.save_state()
@@ -964,6 +1103,8 @@ class FloatingRecorderBoard(QWidget):
 
     def _refresh_targets(self) -> None:
         filt = self.cmb_filter.currentData() or "all"
+        prev = self._current_target()
+        self.cmb_target.blockSignals(True)
         self.cmb_target.clear()
         items: list[dict] = []
         try:
@@ -980,8 +1121,25 @@ class FloatingRecorderBoard(QWidget):
             items = screen_recorder.get_monitors()
         for it in items:
             self.cmb_target.addItem(it.get("title") or "?", it)
+        # Keep prior selection when refreshing the same filter
+        if isinstance(prev, dict):
+            want_title = str(prev.get("title") or "")
+            want_hwnd = int(prev.get("hwnd") or 0)
+            for i in range(self.cmb_target.count()):
+                data = self.cmb_target.itemData(i)
+                if not isinstance(data, dict):
+                    continue
+                if want_hwnd and int(data.get("hwnd") or 0) == want_hwnd:
+                    self.cmb_target.setCurrentIndex(i)
+                    break
+                if want_title and str(data.get("title") or "") == want_title:
+                    self.cmb_target.setCurrentIndex(i)
+                    break
+        self.cmb_target.blockSignals(False)
 
     def _refresh_audio(self) -> None:
+        self.cmb_mic.blockSignals(True)
+        self.cmb_sys.blockSignals(True)
         self.cmb_mic.clear()
         self.cmb_sys.clear()
         self.cmb_mic.addItem("不录制", None)
@@ -992,12 +1150,16 @@ class FloatingRecorderBoard(QWidget):
                 self.cmb_mic.addItem(m["name"], m["index"])
             for s in systems:
                 self.cmb_sys.addItem(s["name"], s["index"])
-            if self.cmb_mic.count() > 1:
+            # Defaults only when nothing was remembered yet
+            cfg = self._cfg()
+            if "mic_index" not in cfg and "mic_name" not in cfg and self.cmb_mic.count() > 1:
                 self.cmb_mic.setCurrentIndex(1)
-            if self.cmb_sys.count() > 1:
+            if "sys_index" not in cfg and "sys_name" not in cfg and self.cmb_sys.count() > 1:
                 self.cmb_sys.setCurrentIndex(1)
         except Exception:
             pass
+        self.cmb_mic.blockSignals(False)
+        self.cmb_sys.blockSignals(False)
 
     def _current_target(self) -> dict | None:
         data = self.cmb_target.currentData()
@@ -1246,6 +1408,9 @@ class FloatingRecorderBoard(QWidget):
         fps = int(self.spin_fps.value())
         mic = self.cmb_mic.currentData()
         sysa = self.cmb_sys.currentData()
+        if mic is None and sysa is None:
+            self._set_status("未选择麦克风/系统声音 → 将保存为无声视频。请在上方下拉框选择设备。")
+            # Still allow recording (some users want silent capture), but make it obvious.
         c = self._cursor_color
 
         self._ensure_overlay()

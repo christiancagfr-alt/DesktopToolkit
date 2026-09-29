@@ -34,7 +34,6 @@ python3 -m PyInstaller --noconfirm --windowed --name DesktopToolkit \
   --hidden-import notebook_sync \
   --hidden-import file_organizer \
   --hidden-import file_organizer_ui \
-  --hidden-import remote_ui \
   --hidden-import rustdesk_bridge \
   --hidden-import win_topmost \
   --hidden-import p2p_transfer \

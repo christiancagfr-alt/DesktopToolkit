@@ -59,12 +59,12 @@ EXT_TYPE_MAP: dict[str, str] = {
 
 @dataclass
 class OrganizeOptions:
-    mode: str = "prefix"  # prefix | date | ext | custom
+    mode: str = "custom"  # custom | prefix | date | ext
     recursive: bool = False
     min_group_size: int = 2  # skip creating folder for singleton groups when >1 would apply
     friendly_types: bool = True  # for ext mode
-    custom_sep: str = "_"
-    custom_parts: int = 4
+    custom_sep: str = "-"
+    custom_parts: int = 3
     # first = join first N segments; nth = use only the N-th segment (1-based)
     # Example: 63-ZB-丸子头女-张明-...  with sep='-', parts=3, take='nth' → 丸子头女
     custom_take: str = "nth"
@@ -106,7 +106,7 @@ def safe_folder_name(name: str) -> str:
 
 def group_key_for(path: Path, opt: OrganizeOptions) -> str:
     stem = path.stem
-    mode = (opt.mode or "prefix").lower()
+    mode = (opt.mode or "custom").lower()
 
     if mode == "prefix":
         m = _TRAILING_SEQ.match(stem)

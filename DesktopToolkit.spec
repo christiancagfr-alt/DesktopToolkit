@@ -44,7 +44,6 @@ a = Analysis(
         "float_assistant",
         "win_topmost",
         "rustdesk_bridge",
-        "remote_ui",
         "remote_lan_ui",
         "lan_remote",
         "cloudflare_api",
