@@ -384,14 +384,24 @@ class FloatingLanBoard(QWidget):
             pass
 
     def mousePressEvent(self, e: QMouseEvent) -> None:
+        if self.embedded:
+            super().mousePressEvent(e)
+            return
         if e.button() == Qt.MouseButton.LeftButton:
-            # only drag from top area when not interacting with inputs
+            # Floating mode only: drag from empty chrome
             self.dragging = True
             self.drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e: QMouseEvent) -> None:
+        if self.embedded:
+            super().mouseMoveEvent(e)
+            return
         if self.dragging and e.buttons() & Qt.MouseButton.LeftButton:
             self.move(e.globalPosition().toPoint() - self.drag_pos)
+        else:
+            super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e: QMouseEvent) -> None:
         self.dragging = False
+        super().mouseReleaseEvent(e)

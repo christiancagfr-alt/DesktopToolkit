@@ -447,9 +447,18 @@ class LyricsDashboard(QWidget):
         # Restore lyric color from state
         if self.state and hasattr(self, "color_presets") and hasattr(self, "cmb_color"):
             cfg = self.state.get("lyrics_player") or {}
+            custom_hex = str(cfg.get("lyric_color_hex") or "").strip()
+            if custom_hex:
+                c = QColor(custom_hex)
+                if c.isValid():
+                    self._custom_lyric_color = c
+                    self.color_presets["自定义"] = c
             saved_color = cfg.get("lyric_color_name")
             if saved_color and saved_color in self.color_presets:
                 self.cmb_color.setCurrentText(saved_color)
+                self._apply_lyric_color()
+            elif custom_hex:
+                self.cmb_color.setCurrentText("自定义")
                 self._apply_lyric_color()
                 
         # Refresh device list when outputs change (BT connect/disconnect)
@@ -881,12 +890,21 @@ class LyricsDashboard(QWidget):
             "天空蓝": QColor(56, 189, 248),
             "紫罗兰": QColor(167, 139, 250),
             "玫瑰粉": QColor(244, 114, 182),
+            "自定义": QColor(255, 255, 255),
         }
         for name in self.color_presets.keys():
             self.cmb_color.addItem(name)
         self.cmb_color.currentIndexChanged.connect(self._apply_lyric_color)
+        self.btn_custom_color = QPushButton("取色")
+        self.btn_custom_color.setObjectName("ghost")
+        self.btn_custom_color.setMinimumHeight(34)
+        self.btn_custom_color.setMinimumWidth(64)
+        self.btn_custom_color.setToolTip("打开取色器，自定义歌词颜色")
+        self.btn_custom_color.clicked.connect(self._pick_custom_lyric_color)
+        self._custom_lyric_color = QColor(255, 255, 255)
         color_layout.addWidget(lbl_color)
         color_layout.addWidget(self.cmb_color, 1)
+        color_layout.addWidget(self.btn_custom_color)
         lay.addLayout(color_layout)
 
         hud_row = QHBoxLayout()
@@ -1492,9 +1510,31 @@ class LyricsDashboard(QWidget):
         """Compat alias — some builds connected this name."""
         self._apply_lyric_color()
 
+    def _pick_custom_lyric_color(self) -> None:
+        from PyQt6.QtWidgets import QColorDialog
+
+        start = getattr(self, "_custom_lyric_color", None) or self.color_presets.get(
+            "自定义", QColor(255, 255, 255)
+        )
+        color = QColorDialog.getColor(start, self, "自定义歌词颜色")
+        if not color.isValid():
+            return
+        self._custom_lyric_color = color
+        self.color_presets["自定义"] = color
+        # Switch to 自定义 without double-saving mid-change
+        blocked = self.cmb_color.blockSignals(True)
+        self.cmb_color.setCurrentText("自定义")
+        self.cmb_color.blockSignals(blocked)
+        self._apply_lyric_color()
+
     def _apply_lyric_color(self, *_args) -> None:
         name = self.cmb_color.currentText() if hasattr(self, "cmb_color") else ""
-        color = self.color_presets.get(name, QColor(255, 255, 255))
+        if name == "自定义":
+            color = getattr(self, "_custom_lyric_color", None) or self.color_presets.get(
+                "自定义", QColor(255, 255, 255)
+            )
+        else:
+            color = self.color_presets.get(name, QColor(255, 255, 255))
         try:
             self.hud.lbl_curr.text_color = color
             self.hud.update()
@@ -1503,6 +1543,7 @@ class LyricsDashboard(QWidget):
         if self.state:
             cfg = self.state.setdefault("lyrics_player", {})
             cfg["lyric_color_name"] = name
+            cfg["lyric_color_hex"] = color.name(QColor.NameFormat.HexRgb)
             if self.callbacks and hasattr(self.callbacks, "save_state"):
                 try:
                     self.callbacks.save_state()

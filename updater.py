@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Bump when shipping a new installer (keep in sync with VERSION file).
-APP_VERSION = "1.9.1"
+APP_VERSION = "1.9.2"
 
 # Public releases channel (organization repo)
 GITHUB_REPO = "secure-artifacts/DesktopToolkit"

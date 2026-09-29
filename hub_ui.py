@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, Qt, QSize, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QSize, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QDesktopServices, QGuiApplication, QIcon
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -204,9 +204,17 @@ class MainWindow(QMainWindow):
                 self.btn_nav_p2p.setChecked(False)
             if hasattr(self, "btn_nav_remote"):
                 self.btn_nav_remote.setChecked(False)
-        if key in self._page_keys:
+        if key not in self._page_keys:
+            return
+        # Freeze paints while swapping heavy pages — avoids flicker / jank
+        self.setUpdatesEnabled(False)
+        try:
             self._ensure_page(key)
             self.stack.setCurrentIndex(self._page_keys.index(key))
+        finally:
+            self.setUpdatesEnabled(True)
+        # Warm nearby pages in the background so the next click feels instant
+        QTimer.singleShot(0, lambda: self._warmup_neighbors(key))
 
     def _ensure_page(self, key: str) -> None:
         if key in self._loaded_pages or key not in self._page_builders:
@@ -218,6 +226,20 @@ class MainWindow(QMainWindow):
         placeholder.deleteLater()
         self.stack.insertWidget(index, page)
         self._loaded_pages.add(key)
+
+    def _warmup_neighbors(self, key: str) -> None:
+        """Pre-build adjacent nav pages so switching stays snappy."""
+        order = list(self._page_keys)
+        try:
+            i = order.index(key)
+        except ValueError:
+            return
+        for j in (i - 1, i + 1, i + 2):
+            if 0 <= j < len(order):
+                try:
+                    self._ensure_page(order[j])
+                except Exception:
+                    pass
 
     def _home_card(self, icon: str, text: str, cb) -> QPushButton:
         b = QPushButton(f"  {text}")
