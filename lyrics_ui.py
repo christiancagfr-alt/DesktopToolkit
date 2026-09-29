@@ -137,59 +137,77 @@ class FloatingLyricsWindow(QWidget):
         self.main_layout.addWidget(self.lbl_curr)
         self.main_layout.addWidget(self.lbl_next)
         
-        # Mini hover control widget (Dark Glassmorphism Pill design)
+        # Media controls — larger hit targets; always reachable when unlocked
         self.control_widget = QWidget(self)
         self.control_widget.setObjectName("hudControlPanel")
-        self.control_widget.setFixedSize(200, 38)
+        self.control_widget.setFixedSize(340, 52)
         self.control_widget.setStyleSheet("""
             QWidget#hudControlPanel {
-                background-color: rgba(15, 23, 42, 170); /* Slate-900 transparent */
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 19px;
+                background-color: rgba(15, 23, 42, 210);
+                border: 1px solid rgba(255, 255, 255, 0.22);
+                border-radius: 26px;
             }
             QPushButton {
-                background-color: transparent;
+                background-color: rgba(30, 41, 59, 180);
                 color: #F8FAFC;
-                border: none;
-                border-radius: 14px;
-                min-width: 28px;
-                max-width: 28px;
-                min-height: 28px;
-                max-height: 28px;
-                font-size: 13px;
-                margin-top: 4px;
+                border: 1px solid rgba(148, 163, 184, 0.35);
+                border-radius: 18px;
+                min-width: 44px;
+                max-width: 52px;
+                min-height: 40px;
+                max-height: 40px;
+                font-size: 18px;
+                font-weight: 700;
             }
             QPushButton:hover {
-                background-color: rgba(16, 185, 129, 210); /* Emerald green hover */
+                background-color: rgba(16, 185, 129, 230);
                 color: #FFFFFF;
+                border-color: #34d399;
             }
             QPushButton:pressed {
                 background-color: rgba(6, 95, 70, 230);
             }
+            QPushButton#hudClose {
+                background-color: rgba(127, 29, 29, 200);
+                border-color: rgba(248, 113, 113, 0.5);
+                font-size: 16px;
+            }
+            QPushButton#hudClose:hover {
+                background-color: rgba(220, 38, 38, 230);
+            }
         """)
-        
+
         self.control_layout = QHBoxLayout(self.control_widget)
-        self.control_layout.setContentsMargins(6, 0, 6, 0)
-        self.control_layout.setSpacing(10)
+        self.control_layout.setContentsMargins(10, 4, 10, 4)
+        self.control_layout.setSpacing(8)
         self.control_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
+
         self.btn_prev = QPushButton("⏮", self.control_widget)
+        self.btn_prev.setToolTip("上一首")
         self.btn_play = QPushButton("▶", self.control_widget)
+        self.btn_play.setToolTip("播放 / 暂停")
         self.btn_next = QPushButton("⏭", self.control_widget)
+        self.btn_next.setToolTip("下一首")
         self.btn_mode = QPushButton("🔁", self.control_widget)
         self.btn_mode.setToolTip("列表循环")
-        
+        self.btn_close_hud = QPushButton("✕", self.control_widget)
+        self.btn_close_hud.setObjectName("hudClose")
+        self.btn_close_hud.setToolTip("关闭桌面歌词（可在音乐页重新开启）")
+
         self.control_layout.addWidget(self.btn_prev)
         self.control_layout.addWidget(self.btn_play)
         self.control_layout.addWidget(self.btn_next)
         self.control_layout.addWidget(self.btn_mode)
-        
+        self.control_layout.addWidget(self.btn_close_hud)
+
         self.main_layout.addWidget(self.control_widget)
         self.main_layout.setAlignment(self.control_widget, Qt.AlignmentFlag.AlignHCenter)
-        self.control_widget.hide()  # Hidden by default
-        
-        self.resize(750, 120)
+        # Show controls by default when unlocked so they are usable without tiny hover target
+        self.control_widget.show()
+
+        self.resize(780, 150)
         self._center_on_screen()
+        self.close_requested = None  # optional Callable set by dashboard
         
     def _center_on_screen(self) -> None:
         screen = self.screen()
@@ -222,28 +240,49 @@ class FloatingLyricsWindow(QWidget):
         self.mode_cycled.emit(next_mode)
         
     def set_locked(self, locked: bool) -> None:
+        """Click-through lock: lyrics stay visible; mouse passes through the window."""
         self.is_locked = locked
+        if locked:
+            # Hide controls while click-through (can't click them anyway)
+            self.control_widget.hide()
+        else:
+            self.control_widget.show()
         if not HAS_WIN32:
             return
-            
         hwnd = int(self.winId())
         styles = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
         if locked:
-            # Set WS_EX_TRANSPARENT so mouse clicks pass through
-            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, styles | win32con.WS_EX_TRANSPARENT | win32con.WS_EX_LAYERED)
-            self.control_widget.hide()
+            win32gui.SetWindowLong(
+                hwnd,
+                win32con.GWL_EXSTYLE,
+                styles | win32con.WS_EX_TRANSPARENT | win32con.WS_EX_LAYERED,
+            )
         else:
-            # Remove transparent flag
             win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, styles & ~win32con.WS_EX_TRANSPARENT)
-            
+
+    def request_close(self) -> None:
+        """Close desktop lyrics (works even if user can't click the HUD)."""
+        try:
+            self.set_locked(False)
+        except Exception:
+            pass
+        self.hide()
+        cb = getattr(self, "close_requested", None)
+        if callable(cb):
+            try:
+                cb()
+            except Exception:
+                pass
+
     def enterEvent(self, event) -> None:
-        # Hover overlay: show mini media controls only when unlocked
         if not self.is_locked:
             self.control_widget.show()
         super().enterEvent(event)
-        
+
     def leaveEvent(self, event) -> None:
-        self.control_widget.hide()
+        # Keep controls visible while unlocked so they stay easy to hit
+        if self.is_locked:
+            self.control_widget.hide()
         super().leaveEvent(event)
         
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -376,6 +415,8 @@ class LyricsDashboard(QWidget):
         self.engine.set_auto_switch(self._saved_auto_switch)
 
         # Connect HUD buttons
+        self.hud.close_requested = self._on_hud_close_requested
+        self.hud.btn_close_hud.clicked.connect(self._on_hud_close_requested)
         self.hud.btn_prev.clicked.connect(self.play_prev)
         self.hud.btn_play.clicked.connect(self.toggle_play)
         self.hud.btn_next.clicked.connect(self.play_next)
@@ -653,9 +694,14 @@ class LyricsDashboard(QWidget):
         title.setObjectName("section")
         head.addWidget(title)
         head.addStretch(1)
-        btn_import = QPushButton("导入本地")
+        btn_import = QPushButton("导入文件")
         btn_import.setObjectName("ghost")
+        btn_import.setToolTip("选择一个或多个音频文件导入")
         btn_import.clicked.connect(self._on_import_local_clicked)
+        btn_import_folder = QPushButton("导入文件夹")
+        btn_import_folder.setObjectName("ghost")
+        btn_import_folder.setToolTip("选择文件夹，递归导入其中的音频（含同名 .lrc）")
+        btn_import_folder.clicked.connect(self._on_import_folder_clicked)
         btn_open = QPushButton("打开文件夹")
         btn_open.setObjectName("ghost")
         btn_open.clicked.connect(self._on_open_dir_clicked)
@@ -663,6 +709,7 @@ class LyricsDashboard(QWidget):
         btn_path.setObjectName("ghost")
         btn_path.clicked.connect(self._on_change_dir_clicked)
         head.addWidget(btn_import)
+        head.addWidget(btn_import_folder)
         head.addWidget(btn_path)
         head.addWidget(btn_open)
         lay.addLayout(head)
@@ -843,11 +890,13 @@ class LyricsDashboard(QWidget):
         lay.addLayout(color_layout)
 
         hud_row = QHBoxLayout()
-        self.chk_hud = QCheckBox("显示桌面歌词")
+        self.chk_hud = QCheckBox("显示桌面歌词（软件内开启 / 可随时关闭）")
         self.chk_hud.setChecked(True)
+        self.chk_hud.setToolTip("勾选后显示桌面歌词；取消勾选或点歌词上的 ✕ 即可关闭")
         self.chk_hud.stateChanged.connect(self._on_hud_toggled)
-        self.chk_lock = QCheckBox("穿透锁定（不挡鼠标）")
+        self.chk_lock = QCheckBox("穿透锁定（歌词照常显示，鼠标点穿到下面）")
         self.chk_lock.setChecked(False)
+        self.chk_lock.setToolTip("开启后歌词仍可见，但不接收鼠标；关闭请在本页取消勾选「显示桌面歌词」")
         self.chk_lock.stateChanged.connect(self._on_lock_toggled)
         hud_row.addWidget(self.chk_hud)
         hud_row.addWidget(self.chk_lock)
@@ -963,7 +1012,32 @@ class LyricsDashboard(QWidget):
 
     def _on_hide(self) -> None:
         self._save_settings()
+        # Also close desktop lyrics when hiding the player window
+        self._on_hud_close_requested()
         self.hide()
+
+    def _on_hud_close_requested(self) -> None:
+        """Close desktop lyrics from HUD ✕ or when player asks."""
+        try:
+            self.hud.set_locked(False)
+        except Exception:
+            pass
+        try:
+            self.hud.hide()
+        except Exception:
+            pass
+        if hasattr(self, "chk_hud"):
+            self.chk_hud.blockSignals(True)
+            self.chk_hud.setChecked(False)
+            self.chk_hud.blockSignals(False)
+        if hasattr(self, "chk_lock"):
+            self.chk_lock.blockSignals(True)
+            self.chk_lock.setChecked(False)
+            self.chk_lock.blockSignals(False)
+        try:
+            self._save_settings()
+        except Exception:
+            pass
 
     def _title_press(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1055,19 +1129,41 @@ class LyricsDashboard(QWidget):
         )
         if not file_paths:
             return
-            
-        for fp in file_paths:
-            src_path = Path(fp)
+        self._import_audio_paths([Path(fp) for fp in file_paths])
+
+    def _on_import_folder_clicked(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "选择要导入的音乐文件夹")
+        if not folder:
+            return
+        root = Path(folder)
+        exts = {".mp3", ".wav", ".m4a", ".ogg"}
+        paths = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in exts]
+        if not paths:
+            try:
+                self.lbl_path.setToolTip("该文件夹下没有可导入的音频")
+            except Exception:
+                pass
+            return
+        self._import_audio_paths(paths)
+
+    def _import_audio_paths(self, paths: list[Path]) -> None:
+        self.music_dir.mkdir(parents=True, exist_ok=True)
+        for src_path in paths:
             dest_path = self.music_dir / src_path.name
             try:
+                # Avoid clobbering different songs with the same name
+                if dest_path.exists() and dest_path.stat().st_size != src_path.stat().st_size:
+                    stem, suf = src_path.stem, src_path.suffix
+                    n = 2
+                    while dest_path.exists():
+                        dest_path = self.music_dir / f"{stem}_{n}{suf}"
+                        n += 1
                 shutil.copy2(src_path, dest_path)
-                # Check for corresponding LRC file in the same folder
                 lrc_src = src_path.with_suffix(".lrc")
                 if lrc_src.exists():
-                    shutil.copy2(lrc_src, self.music_dir / lrc_src.name)
+                    shutil.copy2(lrc_src, dest_path.with_suffix(".lrc"))
             except Exception as e:
                 print(f"Failed to copy file: {e}")
-                
         self._refresh_playlist()
         
     def _save_settings(self) -> None:
@@ -1444,15 +1540,28 @@ class LyricsDashboard(QWidget):
         self.hud.update_playback_state(playing)
         
     def _on_hud_toggled(self, state: int) -> None:
-        visible = state == 2  # Checked
-        if visible and self.engine.is_playing():
+        # Checked → show desktop lyrics (from software). Unchecked → close.
+        visible = state == Qt.CheckState.Checked.value or state == 2
+        if visible:
+            try:
+                self.hud.set_locked(bool(self.chk_lock.isChecked()) if hasattr(self, "chk_lock") else False)
+            except Exception:
+                pass
             self.hud.show()
+            self.hud.raise_()
         else:
+            try:
+                self.hud.set_locked(False)
+            except Exception:
+                pass
             self.hud.hide()
-            
+
     def _on_lock_toggled(self, state: int) -> None:
-        locked = state == 2  # Checked
+        # 穿透：歌词仍正常显示，鼠标点击穿透到下方窗口
+        locked = state == Qt.CheckState.Checked.value or state == 2
         self.hud.set_locked(locked)
+        if locked and self.chk_hud.isChecked() and not self.hud.isVisible():
+            self.hud.show()
         
     def _on_open_dir_clicked(self) -> None:
         try:

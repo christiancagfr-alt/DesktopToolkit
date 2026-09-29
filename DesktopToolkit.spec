@@ -47,6 +47,7 @@ a = Analysis(
         "remote_ui",
         "remote_lan_ui",
         "lan_remote",
+        "cloudflare_api",
         "pynput",
         "pynput.mouse",
         "pynput.keyboard",

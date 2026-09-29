@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -249,87 +250,95 @@ class FloatingCleanerBoard(QWidget):
         return self.state.setdefault("cleaner", {})
 
     def _build_scope_page(self) -> QWidget:
+        """Compact checklist: one row per item (tooltip = detail), scrollable."""
         page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(14, 12, 14, 10)
-        lay.setSpacing(8)
-        title = QLabel("清理范围（可多选）")
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(12, 10, 12, 8)
+        outer.setSpacing(8)
+
+        head = QHBoxLayout()
+        title = QLabel("清理范围")
         title.setObjectName("section")
-        lay.addWidget(title)
-        tip = QLabel("勾选要清理的项目。敏感项（回收站/系统更新）请确认后再勾。")
+        head.addWidget(title, 1)
+        tip = QLabel("悬停查看说明 · 敏感项请确认后再勾")
         tip.setObjectName("muted")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
+        head.addWidget(tip)
+        outer.addLayout(head)
 
         saved = self._clean_cfg().get("scopes")
         if not isinstance(saved, list) or not saved:
             saved = list(DEFAULT_SCOPES)
 
-        for sid, label, desc in CLEAN_SCOPES:
-            box = QCheckBox(f"{label}")
-            box.setChecked(sid in saved)
-            box.setToolTip(desc)
-            box.setMinimumHeight(28)
-            box.stateChanged.connect(self._persist_scopes)
-            self._scope_checks[sid] = box
-            lay.addWidget(box)
-            d = QLabel(f"  {desc}")
-            d.setObjectName("muted")
-            d.setWordWrap(True)
-            lay.addWidget(d)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(4, 0, 8, 0)
+        lay.setSpacing(4)
 
-        if DEEP_SCOPES:
-            deep_title = QLabel("深度清理项（更彻底，请谨慎）")
-            deep_title.setObjectName("section")
-            lay.addWidget(deep_title)
-            deep_tip = QLabel("错误报告、崩溃转储、GPU 缓存、聊天软件缓存等。点底部「深度清理」会全选这些项。")
-            deep_tip.setObjectName("muted")
-            deep_tip.setWordWrap(True)
-            lay.addWidget(deep_tip)
-            for sid, label, desc in DEEP_SCOPES:
-                box = QCheckBox(f"{label}")
+        def _add_group(heading: str, scopes: list) -> None:
+            h = QLabel(heading)
+            h.setObjectName("section")
+            h.setStyleSheet("QLabel#section { padding-top: 6px; }")
+            lay.addWidget(h)
+            card = QFrame()
+            card.setStyleSheet(
+                "QFrame { background: #0f172a; border: 1px solid #334155; border-radius: 10px; }"
+            )
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(10, 8, 10, 8)
+            cl.setSpacing(2)
+            for sid, label, desc in scopes:
+                box = QCheckBox(label)
                 box.setChecked(sid in saved)
                 box.setToolTip(desc)
-                box.setMinimumHeight(28)
+                box.setMinimumHeight(26)
                 box.stateChanged.connect(self._persist_scopes)
                 self._scope_checks[sid] = box
-                lay.addWidget(box)
-                d = QLabel(f"  {desc}")
-                d.setObjectName("muted")
-                d.setWordWrap(True)
-                lay.addWidget(d)
+                cl.addWidget(box)
+            lay.addWidget(card)
+
+        _add_group("常规", list(CLEAN_SCOPES))
+        if DEEP_SCOPES:
+            _add_group("深度（更彻底）", list(DEEP_SCOPES))
+        lay.addStretch(1)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
 
         row = QHBoxLayout()
-        row.setSpacing(10)
+        row.setSpacing(8)
         all_btn = QPushButton("全部勾选")
         all_btn.setObjectName("soft")
-        all_btn.setMinimumHeight(34)
-        all_btn.setMinimumWidth(100)
-        all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        all_btn.setToolTip("勾选上面所有清理范围")
+        all_btn.setMinimumHeight(32)
         all_btn.clicked.connect(lambda: self._set_all_scopes(True))
         none_btn = QPushButton("全部取消")
         none_btn.setObjectName("soft")
-        none_btn.setMinimumHeight(34)
-        none_btn.setMinimumWidth(100)
-        none_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        none_btn.setToolTip("取消勾选全部清理范围")
+        none_btn.setMinimumHeight(32)
         none_btn.clicked.connect(lambda: self._set_all_scopes(False))
         row.addWidget(all_btn)
         row.addWidget(none_btn)
         row.addStretch(1)
-        lay.addLayout(row)
-        lay.addStretch(1)
+        outer.addLayout(row)
         return page
 
     def _build_settings_page(self) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(14, 12, 14, 10)
-        lay.setSpacing(10)
+        lay.setSpacing(12)
         title = QLabel("清理设置")
         title.setObjectName("section")
         lay.addWidget(title)
+
+        card = QFrame()
+        card.setStyleSheet(
+            "QFrame { background: #0f172a; border: 1px solid #334155; border-radius: 10px; }"
+        )
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(14, 12, 14, 12)
+        cl.setSpacing(10)
         cfg = self._clean_cfg()
         self.chk_speak = QCheckBox("清理完成后语音播报")
         self.chk_speak.setChecked(bool(cfg.get("speak", True)))
@@ -341,11 +350,13 @@ class FloatingCleanerBoard(QWidget):
         self.chk_keep_log.setChecked(bool(cfg.get("keep_log", True)))
         self.chk_keep_log.stateChanged.connect(self._persist_settings)
         for w in (self.chk_speak, self.chk_bubble, self.chk_keep_log):
-            lay.addWidget(w)
-        tip = QLabel("清理在后台线程执行，不会卡死界面；被占用的文件会自动跳过。")
+            w.setMinimumHeight(28)
+            cl.addWidget(w)
+        tip = QLabel("后台执行，不卡界面；被占用的文件会自动跳过。")
         tip.setObjectName("muted")
         tip.setWordWrap(True)
-        lay.addWidget(tip)
+        cl.addWidget(tip)
+        lay.addWidget(card)
         lay.addStretch(1)
         return page
 

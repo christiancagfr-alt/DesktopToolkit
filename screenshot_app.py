@@ -286,9 +286,9 @@ class ScreenshotEditor(QWidget):
             self.phase = "edit"
 
         self.tool = "pen"
-        # Defaults: red #ff0000, width 6 — then restore user prefs from cfg
+        # Defaults: red #ff0000, thin stroke — then restore user prefs from cfg
         self.color = QColor("#ff0000")
-        self.pen_w = 6  # brush thickness (not QWidget.width)
+        self.pen_w = 3  # stroke thickness (not QWidget.width)
         self.text_bg = True
         self.text_bg_color = QColor(0, 0, 0, 210)
         self.text_outline = True
@@ -478,9 +478,10 @@ class ScreenshotEditor(QWidget):
         cfg = self.cfg if isinstance(self.cfg, dict) else {}
         self.color = self._color_from_cfg(cfg.get("annot_color"), QColor("#ff0000"))
         try:
-            self.pen_w = max(1, min(40, int(cfg.get("annot_width") or 6)))
+            # Clamp hard — oversized prefs made freehand look like solid red blocks
+            self.pen_w = max(1, min(16, int(cfg.get("annot_width") or 3)))
         except (TypeError, ValueError):
-            self.pen_w = 6
+            self.pen_w = 3
         self.text_bg = bool(cfg.get("annot_text_bg", True))
         self.text_bg_color = self._color_from_cfg(
             cfg.get("annot_text_bg_rgba") or cfg.get("annot_text_bg_color"),
@@ -515,7 +516,7 @@ class ScreenshotEditor(QWidget):
 
     def _set_width(self, w: int) -> None:
         old = self.pen_w
-        self.pen_w = max(1, min(40, int(w)))
+        self.pen_w = max(1, min(16, int(w)))
         self._save_annot_prefs()
         if self.pen_w == old and self.phase == "edit":
             self._status_hint = f"粗细 {self.pen_w} · 滚轮可调（已记住）"
@@ -1048,21 +1049,36 @@ class ScreenshotEditor(QWidget):
         col = QColor(st.color)
         if st.kind == "marker":
             col.setAlpha(90)
-        pen = QPen(col, st.width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        # Always reset brush — a leftover brush from dots/fill would FILL freehand
+        # paths and make red "blocks" instead of thin lines.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        # Cap width so high-DPI / bad prefs cannot turn strokes into huge slabs
+        stroke_w = max(1.0, min(24.0, float(st.width or 3)))
+        pen = QPen(
+            col,
+            stroke_w,
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
+        pen.setCosmetic(False)
         p.setPen(pen)
         if st.kind in ("pen", "marker"):
             if len(st.points) >= 2:
                 path = self._smooth_stroke_path(st.points)
+                p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawPath(path)
             elif len(st.points) == 1:
-                r = max(0.5, st.width / 2.0)
+                r = max(0.5, stroke_w / 2.0)
                 p.setBrush(QBrush(col))
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawEllipse(st.points[0], r, r)
+                p.setBrush(Qt.BrushStyle.NoBrush)
         elif st.kind == "arrow" and len(st.points) >= 2:
             a, b = st.points[0], st.points[-1]
+            p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawLine(a, b)
-            self._draw_arrow_head(p, a, b, col, st.width)
+            self._draw_arrow_head(p, a, b, col, stroke_w)
         elif st.kind in ("rect", "fill", "ellipse") and len(st.points) >= 2:
             r = QRectF(st.points[0], st.points[1]).normalized()
             if st.kind == "fill":
@@ -1071,6 +1087,7 @@ class ScreenshotEditor(QWidget):
                 p.setBrush(fill)
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawRect(r)
+                p.setBrush(Qt.BrushStyle.NoBrush)
             elif st.kind == "rect":
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRect(r)

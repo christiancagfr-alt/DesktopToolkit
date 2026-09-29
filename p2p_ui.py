@@ -8,11 +8,13 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QObject
 from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -121,10 +123,62 @@ class FloatingP2PBoard(QWidget):
         tip.setWordWrap(True)
         lay.addWidget(tip)
 
-        lay.addWidget(QLabel("中转地址（Cloudflare Worker）"))
+        # ---- Cloudflare 登录：自动生成 / 选用握手链接 ----
+        cf_box = QFrame()
+        cf_box.setStyleSheet(
+            "QFrame { background: #0b1220; border: 1px solid #334155; border-radius: 12px; }"
+        )
+        cfl = QVBoxLayout(cf_box)
+        cfl.setContentsMargins(12, 10, 12, 10)
+        cfl.setSpacing(6)
+        cfl.addWidget(QLabel("Cloudflare 账号（自动生成握手链接）"))
+        tip_cf = QLabel(
+            "填 API Token（Workers 读/写 + Analytics 读）与 Account ID。"
+            "可「拉取 Worker」选用已有服务，或「一键新建」部署握手中转。"
+        )
+        tip_cf.setObjectName("muted")
+        tip_cf.setWordWrap(True)
+        cfl.addWidget(tip_cf)
+        tok_row = QHBoxLayout()
+        self.txt_cf_token = QLineEdit()
+        self.txt_cf_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.txt_cf_token.setPlaceholderText("API Token")
+        self.txt_cf_account = QLineEdit()
+        self.txt_cf_account.setPlaceholderText("Account ID")
+        tok_row.addWidget(self.txt_cf_token, 2)
+        tok_row.addWidget(self.txt_cf_account, 1)
+        cfl.addLayout(tok_row)
+        cf_btns = QHBoxLayout()
+        self.btn_cf_accounts = QPushButton("检测账号", objectName="soft")
+        self.btn_cf_accounts.clicked.connect(self._cf_detect_account)
+        self.btn_cf_list = QPushButton("拉取 Worker", objectName="soft")
+        self.btn_cf_list.clicked.connect(self._cf_list_workers)
+        self.btn_cf_deploy = QPushButton("一键新建握手", objectName="primary")
+        self.btn_cf_deploy.setToolTip("调用 wrangler deploy 部署 cloudflare/ 中转并自动填入地址")
+        self.btn_cf_deploy.clicked.connect(self._cf_deploy_worker)
+        cf_btns.addWidget(self.btn_cf_accounts)
+        cf_btns.addWidget(self.btn_cf_list)
+        cf_btns.addWidget(self.btn_cf_deploy)
+        cfl.addLayout(cf_btns)
+        pick_row = QHBoxLayout()
+        self.cmb_cf_workers = QComboBox()
+        self.cmb_cf_workers.setMinimumHeight(34)
+        self.cmb_cf_workers.setPlaceholderText("选择已有 Worker…")
+        self.btn_cf_apply = QPushButton("填入链接", objectName="soft")
+        self.btn_cf_apply.clicked.connect(self._cf_apply_worker)
+        pick_row.addWidget(self.cmb_cf_workers, 1)
+        pick_row.addWidget(self.btn_cf_apply)
+        cfl.addLayout(pick_row)
+        self.lbl_cf = QLabel("")
+        self.lbl_cf.setObjectName("muted")
+        self.lbl_cf.setWordWrap(True)
+        cfl.addWidget(self.lbl_cf)
+        lay.addWidget(cf_box)
+
+        lay.addWidget(QLabel("中转地址（握手链接）"))
         url_row = QHBoxLayout()
         self.txt_url = QLineEdit()
-        self.txt_url.setPlaceholderText("wss://your-worker.example.workers.dev")
+        self.txt_url.setPlaceholderText("https://desktop-toolkit-p2p.xxx.workers.dev")
         from p2p_transfer import DEFAULT_SIGNAL_URL
 
         if DEFAULT_SIGNAL_URL:
@@ -252,17 +306,170 @@ class FloatingP2PBoard(QWidget):
             self.txt_room.setText(str(cfg["room"]))
         else:
             self._gen_room()
+        if hasattr(self, "txt_cf_token"):
+            self.txt_cf_token.setText(str(cfg.get("cf_api_token") or ""))
+            self.txt_cf_account.setText(str(cfg.get("cf_account_id") or ""))
 
     def _save(self) -> None:
         cfg = self._cfg()
         cfg["signal_url"] = self.txt_url.text().strip()
         cfg["dest_dir"] = self.txt_dest.text().strip()
         cfg["room"] = self.txt_room.text().strip().upper()
+        if hasattr(self, "txt_cf_token"):
+            cfg["cf_api_token"] = self.txt_cf_token.text().strip()
+            cfg["cf_account_id"] = self.txt_cf_account.text().strip()
         try:
             if self.callbacks and hasattr(self.callbacks, "save_state"):
                 self.callbacks.save_state()
         except Exception:
             pass
+
+    def _cf_creds(self) -> tuple[str, str]:
+        token = self.txt_cf_token.text().strip()
+        account = self.txt_cf_account.text().strip()
+        return token, account
+
+    def _cf_detect_account(self) -> None:
+        token, _ = self._cf_creds()
+        if not token:
+            self.lbl_cf.setText("请先填写 API Token")
+            return
+        self.lbl_cf.setText("正在检测账号…")
+        self.btn_cf_accounts.setEnabled(False)
+
+        def work() -> None:
+            try:
+                from cloudflare_api import list_accounts
+
+                accounts = list_accounts(token)
+                if not accounts:
+                    self._bridge.status.emit("CF：Token 有效但未找到账户")
+                    return
+                # Prefer filling first account if empty
+                acc = accounts[0]
+                names = "、".join(f"{a['name']}({a['id'][:8]}…)" for a in accounts[:5])
+
+                def apply() -> None:
+                    if not self.txt_cf_account.text().strip():
+                        self.txt_cf_account.setText(acc["id"])
+                    self.lbl_cf.setText(f"账号 OK：{names}")
+                    self._save()
+
+                from PyQt6.QtCore import QTimer
+
+                QTimer.singleShot(0, apply)
+            except Exception as e:
+                self._bridge.status.emit(f"CF 检测失败：{e}")
+            finally:
+                from PyQt6.QtCore import QTimer
+
+                QTimer.singleShot(0, lambda: self.btn_cf_accounts.setEnabled(True))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _cf_list_workers(self) -> None:
+        token, account = self._cf_creds()
+        if not token or not account:
+            self.lbl_cf.setText("请填写 API Token 与 Account ID")
+            return
+        self.lbl_cf.setText("正在拉取 Worker 列表…")
+        self.btn_cf_list.setEnabled(False)
+
+        def work() -> None:
+            try:
+                from cloudflare_api import list_worker_scripts, resolve_handshake_url
+
+                names = list_worker_scripts(token, account)
+
+                def apply() -> None:
+                    self.cmb_cf_workers.clear()
+                    for n in names:
+                        try:
+                            url = resolve_handshake_url(token, account, n)
+                        except Exception:
+                            url = ""
+                        self.cmb_cf_workers.addItem(n, url)
+                    self.lbl_cf.setText(f"已拉取 {len(names)} 个 Worker，选中后点「填入链接」")
+                    self._save()
+
+                from PyQt6.QtCore import QTimer
+
+                QTimer.singleShot(0, apply)
+            except Exception as e:
+                self._bridge.status.emit(f"拉取 Worker 失败：{e}")
+            finally:
+                from PyQt6.QtCore import QTimer
+
+                QTimer.singleShot(0, lambda: self.btn_cf_list.setEnabled(True))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _cf_apply_worker(self) -> None:
+        url = self.cmb_cf_workers.currentData()
+        name = self.cmb_cf_workers.currentText().strip()
+        if not url:
+            token, account = self._cf_creds()
+            if token and account and name:
+                try:
+                    from cloudflare_api import resolve_handshake_url
+
+                    url = resolve_handshake_url(token, account, name)
+                except Exception as e:
+                    self.lbl_cf.setText(f"解析链接失败：{e}")
+                    return
+        if not url:
+            self.lbl_cf.setText("请先拉取并选择 Worker")
+            return
+        self.txt_url.setText(str(url))
+        self.lbl_cf.setText(f"已填入握手链接：{url}")
+        self._save()
+
+    def _cf_deploy_worker(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "一键新建握手服务",
+            "将调用本机 Node/wrangler 部署 cloudflare/ 中转 Worker。\n"
+            "若未登录会打开浏览器登录 Cloudflare。\n\n继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.lbl_cf.setText("正在部署…（可能需要 1–2 分钟）")
+        self.btn_cf_deploy.setEnabled(False)
+
+        def work() -> None:
+            try:
+                from cloudflare_api import deploy_signaling_worker
+
+                logs: list[str] = []
+
+                def on_log(m: str) -> None:
+                    logs.append(m)
+                    self._bridge.status.emit(m.splitlines()[-1][:120] if m else "部署中…")
+
+                url = deploy_signaling_worker(on_log=on_log)
+
+                def apply() -> None:
+                    self.txt_url.setText(url)
+                    self.lbl_cf.setText(f"部署成功，已填入：{url}")
+                    self._save()
+                    self.btn_cf_deploy.setEnabled(True)
+
+                from PyQt6.QtCore import QTimer
+
+                QTimer.singleShot(0, apply)
+            except Exception as e:
+                def fail() -> None:
+                    self.lbl_cf.setText(f"部署失败：{e}")
+                    self.btn_cf_deploy.setEnabled(True)
+                    QMessageBox.warning(self, "部署失败", str(e)[:800])
+
+                from PyQt6.QtCore import QTimer
+
+                QTimer.singleShot(0, fail)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _gen_room(self) -> None:
         self.txt_room.setText(make_room_code(6))
@@ -297,30 +504,62 @@ class FloatingP2PBoard(QWidget):
         self.btn_usage.setText("刷新额度")
 
     def _refresh_usage(self) -> None:
+        token, account = self._cf_creds() if hasattr(self, "txt_cf_token") else ("", "")
         url = self.txt_url.text().strip()
-        if not url:
-            self.lbl_usage.setText("请先填写中转地址，再刷新额度。")
-            return
         self.btn_usage.setEnabled(False)
         self.btn_usage.setText("查询中…")
-        self.lbl_usage.setText("正在查询今日请求用量…")
+        self.lbl_usage.setText("正在查询额度…")
 
         def work() -> None:
+            # Prefer account-level GraphQL when token present
+            if token and account:
+                try:
+                    from cloudflare_api import fetch_account_workers_usage_today
+
+                    info = fetch_account_workers_usage_today(token, account)
+                    used = int(info.get("account_requests_today") or 0)
+                    limit = int(info.get("daily_limit") or 100_000)
+                    rem = int(info.get("remaining") or max(0, limit - used))
+                    line = (
+                        f"账户级今日 Workers 调用：已用 {used:,} / {limit:,}，剩余约 {rem:,}\n"
+                        f"（UTC 日 {info.get('day_utc')} · {info.get('note')}）"
+                    )
+                    self._bridge.usage.emit(line, used, limit)
+                    return
+                except Exception as e:
+                    # Fall through to worker /usage
+                    err_acc = str(e)
+                else:
+                    err_acc = ""
+            else:
+                err_acc = ""
+
+            if not url:
+                msg = "请填写中转地址，或先填 Cloudflare Token+Account 查账户额度。"
+                if err_acc:
+                    msg = f"账户额度查询失败：{err_acc}\n" + msg
+                self._bridge.usage.emit(msg, 0, 100_000)
+                return
             try:
                 from p2p_transfer import fetch_worker_usage, format_usage_line, FREE_DAILY_REQUEST_LIMIT
 
                 info = fetch_worker_usage(url)
                 line = format_usage_line(info)
+                if err_acc:
+                    line = f"账户额度失败（{err_acc}），以下为本 Worker 近似值：\n" + line
+                else:
+                    line = "本 Worker 近似值（非账户账单）：\n" + line
                 used = int(info.get("worker_requests_today") or 0)
                 limit = int(info.get("daily_limit") or FREE_DAILY_REQUEST_LIMIT)
                 self._bridge.usage.emit(line, used, limit)
             except Exception as e:
-                # Fallback: show free-plan reminder without live numbers
                 msg = (
-                    f"未能读取实时额度：{e}\n"
-                    "请确认已重新部署含 /usage 的 Worker（cloudflare/ 目录 wrangler deploy）。\n"
-                    "参考：免费约 10 万次请求/天；建连计次，传文件块不计。"
+                    f"未能读取额度：{e}\n"
+                    "账户级请填 Token（需 Account Analytics Read）；"
+                    "或部署含 /usage 的 Worker 后查本服务近似值。"
                 )
+                if err_acc:
+                    msg = f"账户：{err_acc}\n" + msg
                 self._bridge.usage.emit(msg, 0, 100_000)
 
         threading.Thread(target=work, daemon=True).start()
