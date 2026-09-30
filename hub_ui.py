@@ -182,6 +182,29 @@ class MainWindow(QMainWindow):
 
         self.apply_theme()
         self.goto("home")
+        # Idle-preload remaining pages so later sidebar clicks feel instant
+        QTimer.singleShot(150, self._preload_all_pages)
+
+    def _preload_all_pages(self) -> None:
+        pending = [k for k in self._page_keys if k not in self._loaded_pages]
+        if not pending:
+            return
+
+        def _one() -> None:
+            if not pending:
+                return
+            key = pending.pop(0)
+            try:
+                self.setUpdatesEnabled(False)
+                self._ensure_page(key)
+            except Exception:
+                pass
+            finally:
+                self.setUpdatesEnabled(True)
+            if pending:
+                QTimer.singleShot(80, _one)
+
+        QTimer.singleShot(0, _one)
 
     def theme_mode(self) -> str:
         return str((self.host.store.state.get("prefs") or {}).get("theme") or "dark")
@@ -206,14 +229,16 @@ class MainWindow(QMainWindow):
                 self.btn_nav_remote.setChecked(False)
         if key not in self._page_keys:
             return
-        # Freeze paints while swapping heavy pages — avoids flicker / jank
-        self.setUpdatesEnabled(False)
+        # Prefer already-built pages; only block paints when first creating a heavy page
+        need_build = key not in self._loaded_pages
+        if need_build:
+            self.setUpdatesEnabled(False)
         try:
             self._ensure_page(key)
             self.stack.setCurrentIndex(self._page_keys.index(key))
         finally:
-            self.setUpdatesEnabled(True)
-        # Warm nearby pages in the background so the next click feels instant
+            if need_build:
+                self.setUpdatesEnabled(True)
         QTimer.singleShot(0, lambda: self._warmup_neighbors(key))
 
     def _ensure_page(self, key: str) -> None:
@@ -758,49 +783,63 @@ class MainWindow(QMainWindow):
         return body
 
     def _page_transfer(self) -> QWidget:
-        """No middle sub-nav — left nav switches pages directly."""
+        """No middle sub-nav — left nav switches pages directly. Sub-boards lazy-load."""
         page = QWidget()
         outer = QVBoxLayout(page)
         outer.setContentsMargins(12, 12, 12, 12)
         outer.setSpacing(8)
 
         self.transfer_stack = QStackedWidget()
-        # page 0 lan
-        lan_w = QWidget()
-        lan_l = QVBoxLayout(lan_w)
-        lan_l.setContentsMargins(0, 0, 0, 0)
-        from lan_ui import FloatingLanBoard
+        self._transfer_built: set[str] = set()
 
-        if not getattr(self.host, "_embed_lan", None):
-            self.host._embed_lan = FloatingLanBoard(self.host, embedded=True)
-        lan_l.addWidget(self.host._embed_lan)
-        self.transfer_stack.addWidget(lan_w)
+        def _placeholder(tip: str) -> QWidget:
+            w = QWidget()
+            lay = QVBoxLayout(w)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lbl = QLabel(tip)
+            lbl.setObjectName("muted")
+            lay.addWidget(lbl)
+            lay.addStretch(1)
+            return w
 
-        # page 1 p2p
-        p2p_w = QWidget()
-        p2p_l = QVBoxLayout(p2p_w)
-        p2p_l.setContentsMargins(0, 0, 0, 0)
-        from p2p_ui import FloatingP2PBoard
-
-        if not getattr(self.host, "_embed_p2p", None):
-            self.host._embed_p2p = FloatingP2PBoard(
-                self.host._cb(), self.host.store.state, embedded=True
-            )
-        p2p_l.addWidget(self.host._embed_p2p)
-        self.transfer_stack.addWidget(p2p_w)
-
-        # page 2 remote (RustDesk)
-        remote_w = QWidget()
-        remote_l = QVBoxLayout(remote_w)
-        remote_l.setContentsMargins(0, 0, 0, 0)
-        from remote_lan_ui import FloatingRemoteBoard
-
-        if not getattr(self.host, "_embed_remote", None):
-            self.host._embed_remote = FloatingRemoteBoard(self.host, embedded=True)
-        remote_l.addWidget(self.host._embed_remote)
-        self.transfer_stack.addWidget(remote_w)
-
+        self.transfer_stack.addWidget(_placeholder("局域网共享加载中…"))  # 0 lan
+        self.transfer_stack.addWidget(_placeholder("跨网传文件加载中…"))  # 1 p2p
+        self.transfer_stack.addWidget(_placeholder("远程控制加载中…"))  # 2 remote
         outer.addWidget(self.transfer_stack, 1)
+
+        def _ensure_transfer(which: str) -> None:
+            if which in self._transfer_built:
+                return
+            index = {"lan": 0, "p2p": 1, "remote": 2}[which]
+            old = self.transfer_stack.widget(index)
+            body = QWidget()
+            lay = QVBoxLayout(body)
+            lay.setContentsMargins(0, 0, 0, 0)
+            if which == "lan":
+                from lan_ui import FloatingLanBoard
+
+                if not getattr(self.host, "_embed_lan", None):
+                    self.host._embed_lan = FloatingLanBoard(self.host, embedded=True)
+                lay.addWidget(self.host._embed_lan)
+            elif which == "p2p":
+                from p2p_ui import FloatingP2PBoard
+
+                if not getattr(self.host, "_embed_p2p", None):
+                    self.host._embed_p2p = FloatingP2PBoard(
+                        self.host._cb(), self.host.store.state, embedded=True
+                    )
+                lay.addWidget(self.host._embed_p2p)
+            else:
+                from remote_lan_ui import FloatingRemoteBoard
+
+                if not getattr(self.host, "_embed_remote", None):
+                    self.host._embed_remote = FloatingRemoteBoard(self.host, embedded=True)
+                lay.addWidget(self.host._embed_remote)
+            self.transfer_stack.removeWidget(old)
+            old.deleteLater()
+            self.transfer_stack.insertWidget(index, body)
+            self.transfer_stack.setCurrentIndex(index)
+            self._transfer_built.add(which)
 
         # Compat stubs so goto_transfer can still "click" switches
         self.btn_sub_lan = QPushButton()
@@ -811,6 +850,7 @@ class MainWindow(QMainWindow):
         self.btn_sub_remote.hide()
 
         def show_lan() -> None:
+            _ensure_transfer("lan")
             self.transfer_stack.setCurrentIndex(0)
             try:
                 self.host._embed_lan._refresh_status()
@@ -818,9 +858,11 @@ class MainWindow(QMainWindow):
                 pass
 
         def show_p2p() -> None:
+            _ensure_transfer("p2p")
             self.transfer_stack.setCurrentIndex(1)
 
         def show_remote() -> None:
+            _ensure_transfer("remote")
             self.transfer_stack.setCurrentIndex(2)
             try:
                 self.host._embed_remote.refresh()
