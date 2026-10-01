@@ -31,6 +31,11 @@ def robot_icon_path() -> Path:
     return bundle_root() / "logo.png"
 
 
+def _menu_icon(name: str) -> Path | None:
+    p = bundle_root() / "assets" / "ui" / f"{name}.png"
+    return p if p.is_file() else None
+
+
 def default_float_assistant_enabled() -> bool:
     # macOS users complained about logo stuck on screen — default off there
     return sys.platform != "darwin"
@@ -103,8 +108,8 @@ class FloatingAssistant(QWidget):
             }
             QPushButton {
                 background: #1e293b; color: #e2e8f0; border: 1px solid #334155;
-                border-radius: 8px; padding: 8px 12px; text-align: left;
-                font-weight: 700; font-size: 12px;
+                border-radius: 8px; padding: 7px 12px 7px 8px; text-align: left;
+                font-weight: 700; font-size: 12px; min-height: 28px;
             }
             QPushButton:hover {
                 background: #6366f1; color: white; border-color: #818cf8;
@@ -124,24 +129,29 @@ class FloatingAssistant(QWidget):
         title.setObjectName("assistTitle")
         ml.addWidget(title)
 
+        # icon key matches assets/ui/<name>.png (same set as home cards)
         items = [
-            ("待办事项", self._act_todos),
-            ("便签", self._act_notes),
-            ("笔记本", self._act_notebook),
-            ("文件整理", self._act_organize),
-            ("远程控制", self._act_remote),
-            ("番茄钟", self._act_pomo),
-            ("闹钟", self._act_alarm),
-            ("天气播报", self._act_weather),
-            ("区域截图", self._act_shot),
-            ("录屏", self._act_record),
-            ("音乐播放器", self._act_music),
-            ("清理电脑（立即执行）", self._act_clean),
-            ("打开主界面", self._act_hub),
+            ("todos", "待办事项", self._act_todos),
+            ("notes", "便签", self._act_notes),
+            ("notebook", "笔记本", self._act_notebook),
+            ("organize", "文件整理", self._act_organize),
+            ("pomodoro", "番茄钟", self._act_pomo),
+            ("alarm", "闹钟", self._act_alarm),
+            ("travel", "天气播报", self._act_weather),
+            ("shot", "区域截图", self._act_shot),
+            ("recorder", "录屏", self._act_record),
+            ("music", "音乐播放器", self._act_music),
+            ("clean", "清理电脑（立即执行）", self._act_clean),
+            ("settings", "打开主界面", self._act_hub),
         ]
-        for text, slot in items:
-            b = QPushButton(text)
+        icon_size = QSize(22, 22)
+        for icon, text, slot in items:
+            b = QPushButton(f"  {text}")
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+            p = _menu_icon(icon)
+            if p:
+                b.setIcon(QIcon(str(p)))
+                b.setIconSize(icon_size)
             b.clicked.connect(slot)
             ml.addWidget(b)
         self.menu.adjustSize()

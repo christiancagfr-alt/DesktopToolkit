@@ -92,6 +92,14 @@ def main_window_qss(mode: str) -> str:
     QPushButton#nav:checked {{
         background: {t['accent']}; color: white;
     }}
+    QPushButton#navChild {{
+        text-align: left; padding: 8px 10px; border: none; border-radius: 8px;
+        background: transparent; color: {t['muted']}; font-weight: 600; font-size: 12px;
+    }}
+    QPushButton#navChild:hover {{ background: {t['card']}; color: {t['text']}; }}
+    QPushButton#navChild:checked {{
+        background: {t['accent']}; color: white;
+    }}
     QPushButton#homeCard {{
         background: {t['card']}; color: {t['text']};
         border: 1px solid {t['border']}; border-radius: 14px;

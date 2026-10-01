@@ -16,7 +16,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMainWindow,
     QMessageBox,
     QPushButton,
     QSpinBox,
@@ -39,11 +38,16 @@ class _Bridge(QObject):
     finished = pyqtSignal(object)
 
 
-class FileOrganizerWindow(QMainWindow):
-    def __init__(self, parent=None):
+class FileOrganizerWindow(QWidget):
+    def __init__(self, parent=None, *, embedded: bool = False):
         super().__init__(parent)
-        self.setWindowTitle("文件整理")
-        self.resize(720, 620)
+        self.embedded = embedded
+        if embedded:
+            self.setWindowFlags(Qt.WindowType.Widget)
+        else:
+            self.setWindowFlags(Qt.WindowType.Window)
+            self.setWindowTitle("文件整理")
+            self.resize(720, 620)
         self._plans = []
         self._busy = False
         self._bridge = _Bridge()
@@ -53,15 +57,14 @@ class FileOrganizerWindow(QMainWindow):
         self._apply_style()
 
     def _build(self) -> None:
-        root = QWidget()
-        self.setCentralWidget(root)
-        lay = QVBoxLayout(root)
-        lay.setContentsMargins(14, 14, 14, 14)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4 if self.embedded else 14, 4 if self.embedded else 14, 4 if self.embedded else 14, 4 if self.embedded else 14)
         lay.setSpacing(10)
 
-        title = QLabel("文件整理")
-        title.setObjectName("title")
-        lay.addWidget(title)
+        if not self.embedded:
+            title = QLabel("文件整理")
+            title.setObjectName("title")
+            lay.addWidget(title)
         tip = QLabel("按文件名规则创建子文件夹并移动文件。建议先「预览」，确认后再「开始整理」。")
         tip.setObjectName("muted")
         tip.setWordWrap(True)
@@ -154,25 +157,26 @@ class FileOrganizerWindow(QMainWindow):
         self._sync_custom_enabled()
 
     def _apply_style(self) -> None:
+        root_bg = "transparent" if self.embedded else "#111827"
         self.setStyleSheet(
-            """
-            QMainWindow, QWidget { background: #111827; color: #e2e8f0; }
-            QLabel#title { color: #34d399; font-size: 16px; font-weight: 800; }
-            QLabel#section { color: #94a3b8; font-size: 11px; font-weight: 700; }
-            QLabel#muted { color: #94a3b8; font-size: 12px; }
-            QLineEdit, QSpinBox, QComboBox, QTextEdit {
+            f"""
+            FileOrganizerWindow {{ background: {root_bg}; color: #e2e8f0; }}
+            QLabel#title {{ color: #34d399; font-size: 16px; font-weight: 800; }}
+            QLabel#section {{ color: #94a3b8; font-size: 11px; font-weight: 700; }}
+            QLabel#muted {{ color: #94a3b8; font-size: 12px; }}
+            QLineEdit, QSpinBox, QComboBox, QTextEdit {{
                 background: #0f172a; color: #e2e8f0;
                 border: 1px solid #334155; border-radius: 8px; padding: 6px 8px;
-            }
-            QCheckBox { color: #e2e8f0; spacing: 8px; }
-            QPushButton#primary {
+            }}
+            QCheckBox {{ color: #e2e8f0; spacing: 8px; }}
+            QPushButton#primary {{
                 background: #059669; color: white; border: 0; border-radius: 8px;
                 padding: 8px 14px; font-weight: 800;
-            }
-            QPushButton#soft {
+            }}
+            QPushButton#soft {{
                 background: #1e293b; color: #e2e8f0; border: 1px solid #475569;
                 border-radius: 8px; padding: 8px 12px;
-            }
+            }}
             """
         )
 

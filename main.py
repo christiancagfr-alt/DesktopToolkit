@@ -193,7 +193,6 @@ class ToolkitApp(QObject):
             ("录屏", self.show_recorder_board),
             ("跨网传文件", self.show_p2p_board),
             ("局域网共享", self.show_lan_share),
-            ("远程控制", self.show_remote_control),
             ("待办", self.show_todos),
             ("便签", self.show_notes),
             ("笔记本", self.show_notebook),
@@ -497,22 +496,9 @@ class ToolkitApp(QObject):
         self.lan_board._refresh_status()
 
     def show_remote_control(self) -> None:
-        """Open remote control in hub when possible; else floating board."""
+        """Remote control is withheld from release builds until the feature matures."""
         try:
-            self.show_hub()
-            if self.main_win is not None:
-                self.main_win.goto_transfer("remote")
-                return
-        except Exception:
-            pass
-        from remote_lan_ui import FloatingRemoteBoard
-
-        if self.remote_board is None:
-            self.remote_board = FloatingRemoteBoard(self)
-        self.remote_board.show()
-        self.remote_board.raise_()
-        try:
-            self.remote_board.refresh()
+            self.announce("远程控制仍在开发中，当前版本暂未开放")
         except Exception:
             pass
 
@@ -617,7 +603,14 @@ class ToolkitApp(QObject):
         show_notebook_window(self, app_name="DesktopToolkit")
 
     def show_file_organizer(self) -> None:
-        """Open filename-based file organizer."""
+        """Open file organizer in hub when possible; else floating window."""
+        try:
+            self.show_hub()
+            if self.main_win is not None:
+                self.main_win.goto("organize")
+                return
+        except Exception:
+            pass
         from file_organizer_ui import show_file_organizer
 
         show_file_organizer(self)

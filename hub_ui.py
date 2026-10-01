@@ -52,16 +52,8 @@ def ui_icon(name: str) -> Path | None:
 
 
 class MainWindow(QMainWindow):
-    # 无「效率」——效率入口只在首页
-    NAV = [
-        ("home", "首页"),
-        ("shot", "截图"),
-        ("record", "录屏"),
-        ("music", "音乐播放器"),
-        ("transfer", "传输"),
-        ("clean", "清理"),
-        ("prefs", "偏好设置"),
-    ]
+    # Sidebar mirrors home categories; 效率办公 stays home-only.
+    # Groups: 截图与录屏 / 文件传输 / 媒体与系统 — same 2-level style as transfer.
 
     def __init__(self, host, parent=None):
         super().__init__(parent)
@@ -95,7 +87,7 @@ class MainWindow(QMainWindow):
         outer.setSpacing(0)
 
         side = QFrame(objectName="sideNav")
-        side.setFixedWidth(158)
+        side.setFixedWidth(168)
         sl = QVBoxLayout(side)
         sl.setContentsMargins(10, 14, 10, 12)
         sl.setSpacing(3)
@@ -106,43 +98,91 @@ class MainWindow(QMainWindow):
         sl.addSpacing(8)
 
         self._nav_btns: dict[str, QPushButton] = {}
-        for key, label in self.NAV:
-            if key == "transfer":
-                # 传输：固定二级菜单（局域网 / 跨网）
-                self.btn_nav_transfer = QPushButton("传输")
-                self.btn_nav_transfer.setObjectName("nav")
-                self.btn_nav_transfer.setCheckable(True)
-                self.btn_nav_transfer.clicked.connect(lambda: self.goto_transfer("lan"))
-                sl.addWidget(self.btn_nav_transfer)
-                self._nav_btns["transfer"] = self.btn_nav_transfer
+        self._nav_group_btns: dict[str, QPushButton] = {}
+        self._nav_child_keys: dict[str, list[str]] = {}
 
-                self.transfer_sub = QWidget()
-                tsl = QVBoxLayout(self.transfer_sub)
-                tsl.setContentsMargins(12, 0, 0, 4)
-                tsl.setSpacing(2)
-                self.btn_nav_lan = QPushButton("局域网共享")
-                self.btn_nav_lan.setObjectName("nav")
-                self.btn_nav_lan.setCheckable(True)
-                self.btn_nav_lan.clicked.connect(lambda: self.goto_transfer("lan"))
-                self.btn_nav_p2p = QPushButton("跨网传文件")
-                self.btn_nav_p2p.setObjectName("nav")
-                self.btn_nav_p2p.setCheckable(True)
-                self.btn_nav_p2p.clicked.connect(lambda: self.goto_transfer("p2p"))
-                self.btn_nav_remote = QPushButton("远程控制")
-                self.btn_nav_remote.setObjectName("nav")
-                self.btn_nav_remote.setCheckable(True)
-                self.btn_nav_remote.clicked.connect(lambda: self.goto_transfer("remote"))
-                tsl.addWidget(self.btn_nav_lan)
-                tsl.addWidget(self.btn_nav_p2p)
-                tsl.addWidget(self.btn_nav_remote)
-                sl.addWidget(self.transfer_sub)
-            else:
-                b = QPushButton(label)
-                b.setObjectName("nav")
+        def _top(key: str, label: str) -> None:
+            b = QPushButton(label)
+            b.setObjectName("nav")
+            b.setCheckable(True)
+            b.clicked.connect(lambda _=False, k=key: self.goto(k))
+            sl.addWidget(b)
+            self._nav_btns[key] = b
+
+        def _group(group_key: str, label: str, children: list[tuple[str, str, object]]) -> None:
+            parent = QPushButton(label)
+            parent.setObjectName("nav")
+            parent.setCheckable(True)
+            first_cb = children[0][2]
+            parent.clicked.connect(first_cb)
+            sl.addWidget(parent)
+            self._nav_group_btns[group_key] = parent
+            self._nav_btns[group_key] = parent
+
+            wrap = QWidget()
+            wrap_l = QVBoxLayout(wrap)
+            wrap_l.setContentsMargins(12, 0, 0, 4)
+            wrap_l.setSpacing(2)
+            child_keys: list[str] = []
+            for ckey, clabel, cb in children:
+                b = QPushButton(clabel)
+                b.setObjectName("navChild")
                 b.setCheckable(True)
-                b.clicked.connect(lambda _=False, k=key: self.goto(k))
-                sl.addWidget(b)
-                self._nav_btns[key] = b
+                b.clicked.connect(cb)
+                wrap_l.addWidget(b)
+                self._nav_btns[ckey] = b
+                child_keys.append(ckey)
+                if ckey == "lan":
+                    self.btn_nav_lan = b
+                elif ckey == "p2p":
+                    self.btn_nav_p2p = b
+                elif ckey == "shot":
+                    self.btn_nav_shot = b
+                elif ckey == "record":
+                    self.btn_nav_record = b
+                elif ckey == "music":
+                    self.btn_nav_music = b
+                elif ckey == "clean":
+                    self.btn_nav_clean = b
+                elif ckey == "organize":
+                    self.btn_nav_organize = b
+            self._nav_child_keys[group_key] = child_keys
+            if group_key == "transfer":
+                self.btn_nav_transfer = parent
+                self.transfer_sub = wrap
+            elif group_key == "capture":
+                self.btn_nav_capture = parent
+            elif group_key == "media":
+                self.btn_nav_media = parent
+            sl.addWidget(wrap)
+
+        _top("home", "首页")
+        _group(
+            "capture",
+            "截图与录屏",
+            [
+                ("shot", "截图", lambda: self.goto("shot")),
+                ("record", "录屏", lambda: self.goto("record")),
+            ],
+        )
+        _group(
+            "transfer",
+            "文件传输",
+            [
+                ("lan", "局域网共享", lambda: self.goto_transfer("lan")),
+                ("p2p", "跨网传文件", lambda: self.goto_transfer("p2p")),
+            ],
+        )
+        _group(
+            "media",
+            "媒体与系统",
+            [
+                ("music", "音乐播放器", lambda: self.goto("music")),
+                ("clean", "清理", lambda: self.goto("clean")),
+                ("organize", "文件整理", lambda: self.goto("organize")),
+            ],
+        )
+        _top("prefs", "偏好设置")
         sl.addStretch(1)
         try:
             from updater import get_app_version
@@ -165,6 +205,7 @@ class MainWindow(QMainWindow):
             ("music", self._page_music),
             ("transfer", self._page_transfer),
             ("clean", self._page_clean),
+            ("organize", self._page_organize),
             ("prefs", self._page_prefs),
             )
         )
@@ -216,17 +257,32 @@ class MainWindow(QMainWindow):
         if hasattr(self, "lbl_theme_tip"):
             self.lbl_theme_tip.setText(f"当前：{'白天模式' if mode == 'light' else '暗黑模式'}")
 
-    def goto(self, key: str) -> None:
+    def _sync_nav_checked(self, active: str) -> None:
+        """Highlight the active page/child and its category parent."""
+        group_of = {
+            "shot": "capture",
+            "record": "capture",
+            "lan": "transfer",
+            "p2p": "transfer",
+            "transfer": "transfer",
+            "music": "media",
+            "clean": "media",
+            "organize": "media",
+        }
+        active_group = group_of.get(active)
         for k, b in self._nav_btns.items():
-            b.setChecked(k == key)
-        # clear transfer sub highlights unless navigating transfer
-        if key != "transfer":
-            if hasattr(self, "btn_nav_lan"):
-                self.btn_nav_lan.setChecked(False)
-            if hasattr(self, "btn_nav_p2p"):
-                self.btn_nav_p2p.setChecked(False)
-            if hasattr(self, "btn_nav_remote"):
-                self.btn_nav_remote.setChecked(False)
+            if k in self._nav_group_btns:
+                b.setChecked(k == active_group)
+            elif k == active:
+                b.setChecked(True)
+            elif active == "transfer" and k in ("lan", "p2p"):
+                # parent-only; leave child selection to goto_transfer
+                continue
+            else:
+                b.setChecked(False)
+
+    def goto(self, key: str) -> None:
+        self._sync_nav_checked(key)
         if key not in self._page_keys:
             return
         # Prefer already-built pages; only block paints when first creating a heavy page
@@ -322,7 +378,6 @@ class MainWindow(QMainWindow):
                 ],
             )
         )
-        # 只有区域截图 + 录屏；截图点进设置页
         lay.addWidget(
             self._row(
                 "截图与录屏",
@@ -334,11 +389,10 @@ class MainWindow(QMainWindow):
         )
         lay.addWidget(
             self._row(
-                "文件传输与远程",
+                "文件传输",
                 [
                     ("lan", "局域网共享", lambda: self.goto_transfer("lan")),
                     ("p2p", "跨网传文件", lambda: self.goto_transfer("p2p")),
-                    ("remote", "远程控制", lambda: self.goto_transfer("remote")),
                 ],
             )
         )
@@ -348,8 +402,8 @@ class MainWindow(QMainWindow):
                 [
                     ("music", "音乐播放器", lambda: self.goto("music")),
                     ("clean", "清理电脑", lambda: self.goto("clean")),
-                    ("organize", "文件整理", self.host.show_file_organizer),
-                    ("alarm", "天气播报", lambda: self.host.announce_weather(force=True)),
+                    ("organize", "文件整理", lambda: self.goto("organize")),
+                    ("travel", "天气播报", lambda: self.host.announce_weather(force=True)),
                 ],
             )
         )
@@ -358,6 +412,8 @@ class MainWindow(QMainWindow):
         return scroll
 
     def goto_transfer(self, which: str) -> None:
+        if which not in ("lan", "p2p"):
+            which = "lan"
         self.goto("transfer")
         if which == "lan":
             if hasattr(self, "_show_transfer_lan"):
@@ -369,17 +425,7 @@ class MainWindow(QMainWindow):
                 self._show_transfer_p2p()
             elif hasattr(self, "btn_sub_p2p"):
                 self.btn_sub_p2p.click()
-        elif which == "remote":
-            if hasattr(self, "_show_transfer_remote"):
-                self._show_transfer_remote()
-            elif hasattr(self, "btn_sub_remote"):
-                self.btn_sub_remote.click()
-        if hasattr(self, "btn_nav_lan"):
-            self.btn_nav_lan.setChecked(which == "lan")
-            self.btn_nav_p2p.setChecked(which == "p2p")
-            if hasattr(self, "btn_nav_remote"):
-                self.btn_nav_remote.setChecked(which == "remote")
-            self.btn_nav_transfer.setChecked(True)
+        self._sync_nav_checked(which)
 
     def _page_shot(self) -> QWidget:
         """Actions fixed on top; settings scroll so small screens stay usable."""
@@ -783,7 +829,7 @@ class MainWindow(QMainWindow):
         return body
 
     def _page_transfer(self) -> QWidget:
-        """No middle sub-nav — left nav switches pages directly. Sub-boards lazy-load."""
+        """Left-nav switches lan/p2p; boards lazy-load. Remote is intentionally omitted."""
         page = QWidget()
         outer = QVBoxLayout(page)
         outer.setContentsMargins(12, 12, 12, 12)
@@ -804,13 +850,12 @@ class MainWindow(QMainWindow):
 
         self.transfer_stack.addWidget(_placeholder("局域网共享加载中…"))  # 0 lan
         self.transfer_stack.addWidget(_placeholder("跨网传文件加载中…"))  # 1 p2p
-        self.transfer_stack.addWidget(_placeholder("远程控制加载中…"))  # 2 remote
         outer.addWidget(self.transfer_stack, 1)
 
         def _ensure_transfer(which: str) -> None:
             if which in self._transfer_built:
                 return
-            index = {"lan": 0, "p2p": 1, "remote": 2}[which]
+            index = {"lan": 0, "p2p": 1}[which]
             old = self.transfer_stack.widget(index)
             body = QWidget()
             lay = QVBoxLayout(body)
@@ -821,7 +866,7 @@ class MainWindow(QMainWindow):
                 if not getattr(self.host, "_embed_lan", None):
                     self.host._embed_lan = FloatingLanBoard(self.host, embedded=True)
                 lay.addWidget(self.host._embed_lan)
-            elif which == "p2p":
+            else:
                 from p2p_ui import FloatingP2PBoard
 
                 if not getattr(self.host, "_embed_p2p", None):
@@ -829,12 +874,6 @@ class MainWindow(QMainWindow):
                         self.host._cb(), self.host.store.state, embedded=True
                     )
                 lay.addWidget(self.host._embed_p2p)
-            else:
-                from remote_lan_ui import FloatingRemoteBoard
-
-                if not getattr(self.host, "_embed_remote", None):
-                    self.host._embed_remote = FloatingRemoteBoard(self.host, embedded=True)
-                lay.addWidget(self.host._embed_remote)
             self.transfer_stack.removeWidget(old)
             old.deleteLater()
             self.transfer_stack.insertWidget(index, body)
@@ -846,8 +885,6 @@ class MainWindow(QMainWindow):
         self.btn_sub_lan.hide()
         self.btn_sub_p2p = QPushButton()
         self.btn_sub_p2p.hide()
-        self.btn_sub_remote = QPushButton()
-        self.btn_sub_remote.hide()
 
         def show_lan() -> None:
             _ensure_transfer("lan")
@@ -861,20 +898,10 @@ class MainWindow(QMainWindow):
             _ensure_transfer("p2p")
             self.transfer_stack.setCurrentIndex(1)
 
-        def show_remote() -> None:
-            _ensure_transfer("remote")
-            self.transfer_stack.setCurrentIndex(2)
-            try:
-                self.host._embed_remote.refresh()
-            except Exception:
-                pass
-
         self.btn_sub_lan.clicked.connect(show_lan)
         self.btn_sub_p2p.clicked.connect(show_p2p)
-        self.btn_sub_remote.clicked.connect(show_remote)
         self._show_transfer_lan = show_lan
         self._show_transfer_p2p = show_p2p
-        self._show_transfer_remote = show_remote
         show_lan()
         return page
 
@@ -893,6 +920,18 @@ class MainWindow(QMainWindow):
                 embedded=True,
             )
         lay.addWidget(self.host._embed_cleaner, 1)
+        return body
+
+    def _page_organize(self) -> QWidget:
+        from file_organizer_ui import FileOrganizerWindow
+
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.addWidget(QLabel("文件整理", objectName="pageTitle"))
+        if not getattr(self.host, "_embed_organize", None):
+            self.host._embed_organize = FileOrganizerWindow(embedded=True)
+        lay.addWidget(self.host._embed_organize, 1)
         return body
 
     def _page_prefs(self) -> QWidget:
