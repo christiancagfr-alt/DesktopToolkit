@@ -136,6 +136,12 @@ class _ShareHandler(BaseHTTPRequestHandler):
     password_digest: str = ""
     token: str = ""
     log_callback: Callable[[str], None] | None = None
+    # Auth brute-force guard: client IP -> list of failure timestamps
+    _auth_failures: dict[str, list[float]] = {}
+    _auth_lock = threading.Lock()
+    _AUTH_WINDOW_SEC = 60.0
+    _AUTH_MAX_FAILS = 8
+    _AUTH_LOCKOUT_SEC = 120.0
 
     def log_message(self, fmt: str, *args) -> None:  # quieter default
         if self.log_callback:
@@ -143,6 +149,46 @@ class _ShareHandler(BaseHTTPRequestHandler):
                 self.log_callback(fmt % args)
             except Exception:
                 pass
+
+    def _client_ip(self) -> str:
+        try:
+            return str(self.client_address[0] or "")
+        except Exception:
+            return ""
+
+    def _auth_blocked(self) -> bool:
+        ip = self._client_ip()
+        if not ip:
+            return False
+        now = __import__("time").time()
+        with _ShareHandler._auth_lock:
+            stamps = [
+                t
+                for t in _ShareHandler._auth_failures.get(ip, [])
+                if now - t <= _ShareHandler._AUTH_LOCKOUT_SEC
+            ]
+            _ShareHandler._auth_failures[ip] = stamps
+            recent = [t for t in stamps if now - t <= _ShareHandler._AUTH_WINDOW_SEC]
+            return len(recent) >= _ShareHandler._AUTH_MAX_FAILS
+
+    def _auth_fail(self) -> None:
+        ip = self._client_ip()
+        if not ip:
+            return
+        now = __import__("time").time()
+        with _ShareHandler._auth_lock:
+            stamps = _ShareHandler._auth_failures.setdefault(ip, [])
+            stamps.append(now)
+            _ShareHandler._auth_failures[ip] = [
+                t for t in stamps if now - t <= _ShareHandler._AUTH_LOCKOUT_SEC
+            ]
+
+    def _auth_ok_reset(self) -> None:
+        ip = self._client_ip()
+        if not ip:
+            return
+        with _ShareHandler._auth_lock:
+            _ShareHandler._auth_failures.pop(ip, None)
 
     def _credential_ok(self, provided: str) -> bool:
         if not provided:
@@ -159,15 +205,26 @@ class _ShareHandler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization") or ""
         if auth.lower().startswith("bearer "):
             if self._credential_ok(auth[7:].strip()):
+                self._auth_ok_reset()
                 return True
         for header in ("X-Share-Token", "X-Share-Password"):
             if self._credential_ok((self.headers.get(header) or "").strip()):
+                self._auth_ok_reset()
                 return True
-        # Also allow ?token= for simple browser probes
-        parsed = urllib.parse.urlparse(self.path)
-        qs = urllib.parse.parse_qs(parsed.query)
-        provided = (qs.get("token") or qs.get("password") or [""])[0]
-        return self._credential_ok(provided)
+        # Do not accept ?token= / ?password= — credentials in the URL land in
+        # proxy/server access logs and browser history.
+        self._auth_fail()
+        return False
+
+    def _require_auth(self) -> bool:
+        """Return True if authorized. Sends 429/401 on failure."""
+        if self._auth_blocked():
+            self._send_error_json(429, "尝试次数过多，请稍后再试")
+            return False
+        if not self._auth_ok():
+            self._send_error_json(401, "密码错误或未授权")
+            return False
+        return True
 
     def _send_json(self, code: int, payload: dict[str, Any]) -> None:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -189,8 +246,7 @@ class _ShareHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:  # type: ignore[override]
-        if not self._auth_ok():
-            self._send_error_json(401, "密码错误或未授权")
+        if not self._require_auth():
             return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
@@ -343,8 +399,7 @@ class _ShareHandler(BaseHTTPRequestHandler):
         self._send_error_json(404, f"未知接口：{path}")
 
     def do_POST(self) -> None:  # type: ignore[override]
-        if not self._auth_ok():
-            self._send_error_json(401, "密码错误或未授权")
+        if not self._require_auth():
             return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"

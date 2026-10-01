@@ -94,14 +94,28 @@ class GoogleDriveClient:
         if not path.is_file():
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            raw = path.read_text(encoding="utf-8")
+            try:
+                from secret_store import unprotect
+
+                raw = unprotect(raw)
+            except Exception:
+                pass
+            return json.loads(raw)
         except Exception:
             return None
 
     def save_token(self, token: dict) -> None:
         path = self.token_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(token, ensure_ascii=False, indent=2), encoding="utf-8")
+        raw = json.dumps(token, ensure_ascii=False, indent=2)
+        try:
+            from secret_store import protect
+
+            raw = protect(raw)
+        except Exception:
+            pass
+        path.write_text(raw, encoding="utf-8")
 
     def clear_token(self) -> None:
         path = self.token_path()

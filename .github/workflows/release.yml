@@ -26,16 +26,24 @@ jobs:
       version: ${{ steps.t.outputs.version }}
     steps:
       - id: t
+        env:
+          # Pass via env (not shell interpolation) to avoid script injection from tag input
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
           else
-            TAG="${{ github.ref_name }}"
+            TAG="$REF_NAME"
           fi
-          case "$TAG" in
-            v*) VERSION="${TAG#v}" ;;
-            *) echo "Tag must look like vX.Y.Z, got: $TAG"; exit 1 ;;
-          esac
+          # Strict semver tag only — rejects shell metacharacters
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9]+)?$ ]]; then
+            echo "Tag must look like vX.Y.Z, got: $TAG"
+            exit 1
+          fi
+          VERSION="${TAG#v}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building release $TAG ($VERSION)"
@@ -46,10 +54,12 @@ jobs:
     steps:
       # Checkout the commit/branch that triggered the workflow (main for manual, tag tip for tag push)
       - name: Checkout
-        uses: actions/checkout@v4
+        # actions/checkout@v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        # actions/setup-python@v5.4.0
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
         with:
           python-version: "3.12"
 
@@ -108,7 +118,8 @@ jobs:
           Get-ChildItem $releaseDir | Format-Table Name, Length
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        # actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-assets
           path: release-assets/*
@@ -119,10 +130,10 @@ jobs:
     runs-on: macos-14
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
         with:
           python-version: "3.12"
 
@@ -182,7 +193,7 @@ jobs:
           ls -la release-assets
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: macos-assets
           path: release-assets/*
@@ -193,10 +204,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
         with:
           python-version: "3.12"
 
@@ -231,7 +242,7 @@ jobs:
           ls -la release-assets
 
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: linux-assets
           path: release-assets/*
@@ -242,10 +253,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout notes
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        # actions/download-artifact@v4.2.1
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e
         with:
           path: artifacts
           merge-multiple: true
@@ -254,7 +266,8 @@ jobs:
         run: ls -la artifacts
 
       - name: Create / update GitHub Release
-        uses: softprops/action-gh-release@v2
+        # softprops/action-gh-release@v2.2.1
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda
         with:
           tag_name: ${{ needs.resolve.outputs.tag }}
           name: Desktop Toolkit ${{ needs.resolve.outputs.version }}

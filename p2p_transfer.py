@@ -43,8 +43,10 @@ CHUNK = 256 * 1024  # 256 KiB
 FREE_DAILY_REQUEST_LIMIT = 100_000
 
 
-def make_room_code(n: int = 6) -> str:
+def make_room_code(n: int = 8) -> str:
+    """Generate a room code. Default length 8 (~40 bits) to reduce guessing on public Workers."""
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    n = max(6, min(int(n or 8), 16))
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
@@ -541,8 +543,10 @@ class P2PSession:
                         n += 1
                     try:
                         extract_dir.mkdir(parents=True, exist_ok=True)
+                        from zip_safe import safe_extractall
+
                         with zipfile.ZipFile(out_path, "r") as zf:
-                            zf.extractall(extract_dir)
+                            safe_extractall(zf, extract_dir)
                         self.on_status(
                             f"✅ 已保存压缩包：{out_path}\n"
                             f"✅ 已自动解压到：{extract_dir}"

@@ -454,8 +454,10 @@ def _install_node_portable(on_log: Callable[[str], None] | None = None) -> tuple
         raise RuntimeError(f"自动安装 Node.js 失败：{e}") from e
 
     log("正在解压 Node…")
+    from zip_safe import safe_extractall
+
     with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(tools)
+        safe_extractall(zf, tools)
     if not node.is_file():
         # zip root may nest differently
         matches = list(tools.glob("node-*/node.exe"))

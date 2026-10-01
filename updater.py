@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -15,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Bump when shipping a new installer (keep in sync with VERSION file).
-APP_VERSION = "1.9.4"
+APP_VERSION = "1.9.5"
 
 # Public releases channel (organization repo)
 GITHUB_REPO = "secure-artifacts/DesktopToolkit"
@@ -49,6 +50,8 @@ class UpdateCheckResult:
     release_url: str
     download_url: str = ""
     asset_name: str = ""
+    sha256_url: str = ""
+    sha256_expected: str = ""
 
 
 def _normalize_version(text: str) -> tuple[int, ...]:
@@ -106,9 +109,10 @@ def _pick_release_payload(timeout: float, user_agent: str) -> dict:
     return best
 
 
-def _select_asset(payload: dict) -> tuple[str, str]:
-    """Prefer platform-matching assets (Mac must not pick Windows setup.exe)."""
+def _select_asset(payload: dict) -> tuple[str, str, str]:
+    """Prefer platform-matching assets. Returns (url, name, sha256_url)."""
     candidates: list[tuple[int, str, str]] = []
+    sha_by_name: dict[str, str] = {}
     is_mac = sys.platform == "darwin"
     is_win = sys.platform.startswith("win")
     for asset in payload.get("assets") or []:
@@ -117,6 +121,10 @@ def _select_asset(payload: dict) -> tuple[str, str]:
         if not url:
             continue
         low = name.lower()
+        if low.endswith(".sha256"):
+            sha_by_name[name[:-7]] = url  # strip .sha256 → original asset name key
+            sha_by_name[name] = url
+            continue
         if is_mac:
             # Prefer DMG (drag into Applications), then macos.zip
             if low.endswith(".dmg") and "macos" in low:
@@ -140,9 +148,11 @@ def _select_asset(payload: dict) -> tuple[str, str]:
             if low.endswith(".zip") or low.endswith(".7z") or low.endswith(".exe"):
                 candidates.append((5, url, name))
     if not candidates:
-        return "", ""
+        return "", "", ""
     candidates.sort(key=lambda x: x[0])
-    return candidates[0][1], candidates[0][2]
+    url, name = candidates[0][1], candidates[0][2]
+    sha_url = sha_by_name.get(name) or sha_by_name.get(f"{name}.sha256") or ""
+    return url, name, sha_url
 
 
 def check_for_update(timeout: float = 8.0) -> UpdateCheckResult:
@@ -164,7 +174,13 @@ def check_for_update(timeout: float = 8.0) -> UpdateCheckResult:
     tag = str(payload.get("tag_name") or payload.get("name") or "").strip()
     latest = tag.lstrip("vV")
     html_url = str(payload.get("html_url") or RELEASES_PAGE)
-    download, asset_name = _select_asset(payload)
+    download, asset_name, sha256_url = _select_asset(payload)
+    sha256_expected = ""
+    if sha256_url and _update_url_allowed(sha256_url):
+        try:
+            sha256_expected = _fetch_sha256_text(sha256_url, timeout=timeout, user_agent=ua)
+        except Exception:
+            sha256_expected = ""
 
     if not latest:
         return UpdateCheckResult(
@@ -182,6 +198,8 @@ def check_for_update(timeout: float = 8.0) -> UpdateCheckResult:
             f"发现新版本 {latest}（当前 {current}）。\n"
             f"推荐下载：{asset_name or '见 GitHub Releases'}"
         )
+        if sha256_expected:
+            msg += "\n已附带 SHA256 校验。"
     else:
         msg = (
             f"已是最新版本。\n"
@@ -198,7 +216,61 @@ def check_for_update(timeout: float = 8.0) -> UpdateCheckResult:
         release_url=html_url,
         download_url=download,
         asset_name=asset_name,
+        sha256_url=sha256_url,
+        sha256_expected=sha256_expected,
     )
+
+
+_ALLOWED_UPDATE_HOSTS = frozenset(
+    {
+        "github.com",
+        "www.github.com",
+        "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+        "github-releases.githubusercontent.com",
+    }
+)
+
+
+def _update_url_allowed(url: str) -> bool:
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("https",):
+            return False
+        host = (parsed.hostname or "").lower()
+        if host in _ALLOWED_UPDATE_HOSTS:
+            return True
+        # Allow GitHub release CDN hostnames under githubusercontent.com
+        if host.endswith(".githubusercontent.com"):
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _fetch_sha256_text(url: str, *, timeout: float, user_agent: str) -> str:
+    """Download a .sha256 sidecar and return the hex digest (64 chars)."""
+    req = urllib.request.Request(url, headers={"User-Agent": user_agent, "Accept": "text/plain,*/*"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        text = resp.read().decode("utf-8", errors="replace").strip()
+    # Formats: "<hex>  filename" or bare "<hex>"
+    first = (text.split() or [""])[0].strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", first):
+        raise ValueError(f"无法解析 SHA256 文件内容：{text[:80]!r}")
+    return first
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with Path(path).open("rb") as f:
+        while True:
+            block = f.read(1024 * 1024)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
 
 
 def download_update(
@@ -208,10 +280,19 @@ def download_update(
     filename: str | None = None,
     timeout: float = 120.0,
     progress_cb=None,
+    expected_sha256: str = "",
+    sha256_url: str = "",
+    require_sha256: bool = True,
 ) -> Path:
-    """Download installer/asset to a local file. Raises on failure."""
+    """Download installer/asset to a local file. Raises on failure.
+
+    When *require_sha256* is True (default), a matching GitHub ``.sha256``
+    sidecar must verify; otherwise the download is deleted and rejected.
+    """
     if not url or not str(url).startswith("http"):
         raise ValueError("没有可下载的安装包地址，请打开下载页手动获取。")
+    if not _update_url_allowed(url):
+        raise ValueError("更新地址不在允许的 GitHub 发布域名内，已拒绝下载。")
     low = str(url).lower()
     if "/releases/tag/" in low and not any(
         low.endswith(ext) for ext in (".exe", ".zip", ".7z", ".dmg")
@@ -242,6 +323,32 @@ def download_update(
                         pass
     if not dest.is_file() or dest.stat().st_size < 1024:
         raise RuntimeError("下载文件无效或过小。")
+
+    expect = (expected_sha256 or "").strip().lower()
+    if not expect and sha256_url:
+        if not _update_url_allowed(sha256_url):
+            raise RuntimeError("SHA256 校验地址不在允许域名内。")
+        expect = _fetch_sha256_text(
+            sha256_url, timeout=min(30.0, timeout), user_agent=headers["User-Agent"]
+        )
+    if require_sha256 and not expect:
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise RuntimeError(
+            "发布包缺少 SHA256 校验文件，已拒绝安装。请从 GitHub Releases 页面手动下载。"
+        )
+    if expect:
+        actual = file_sha256(dest)
+        if actual != expect:
+            try:
+                dest.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise RuntimeError(
+                f"SHA256 校验失败（文件可能被篡改或下载不完整）。\n期望 {expect}\n实际 {actual}"
+            )
     return dest
 
 
@@ -272,8 +379,10 @@ def _install_mac_zip(zip_path: Path) -> Path:
     if extract_dir.exists():
         shutil.rmtree(extract_dir, ignore_errors=True)
     extract_dir.mkdir(parents=True, exist_ok=True)
+    from zip_safe import safe_extractall
+
     with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(extract_dir)
+        safe_extractall(zf, extract_dir)
     app = _find_app_bundle(extract_dir)
     if app is None:
         # Open Finder so user can drag manually

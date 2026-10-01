@@ -37,6 +37,8 @@ a = Analysis(
         "ui_theme",
         "theme",
         "updater",
+        "zip_safe",
+        "secret_store",
         "storage",
         "skin",
         "hotkeys",

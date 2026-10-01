@@ -1316,6 +1316,8 @@ class MainWindow(QMainWindow):
         self._last_release_url = result.release_url or ""
         self._last_download_url = result.download_url or ""
         self._last_asset_name = getattr(result, "asset_name", "") or ""
+        self._last_sha256 = getattr(result, "sha256_expected", "") or ""
+        self._last_sha256_url = getattr(result, "sha256_url", "") or ""
         self.btn_open_release.setEnabled(bool(self._last_release_url or self._last_download_url))
         if not result.ok:
             if not silent_if_latest:
@@ -1397,7 +1399,14 @@ class MainWindow(QMainWindow):
                     pct = int(done * 100 / total) if total else 0
                     self._update_bridge.progress.emit(f"正在下载安装包… {pct}%")
 
-                path = download_update(url, filename=name, progress_cb=prog)
+                path = download_update(
+                    url,
+                    filename=name,
+                    progress_cb=prog,
+                    expected_sha256=getattr(self, "_last_sha256", "") or "",
+                    sha256_url=getattr(self, "_last_sha256_url", "") or "",
+                    require_sha256=True,
+                )
                 launch_installer(path)
             except Exception as e:
                 err = e

@@ -119,8 +119,10 @@ class NotebookSync:
                 zpath.write_bytes(resp.read())
             extract = Path(td) / "extracted"
             extract.mkdir()
+            from zip_safe import safe_extractall
+
             with zipfile.ZipFile(zpath, "r") as zf:
-                zf.extractall(extract)
+                safe_extractall(zf, extract)
             status("合并到本地…")
             merged = self._merge_from_dir(extract)
         return f"已从云端合并：更新 {merged} 篇笔记"

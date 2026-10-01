@@ -135,7 +135,14 @@ class JsonStore:
             saved = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return copy.deepcopy(DEFAULT_STATE)
-        return self._merge(saved, DEFAULT_STATE)
+        merged = self._merge(saved, DEFAULT_STATE)
+        try:
+            from secret_store import unprotect_state
+
+            unprotect_state(merged)
+        except Exception:
+            pass
+        return merged
 
     @staticmethod
     def _merge(value: dict, defaults: dict) -> dict:
@@ -151,7 +158,13 @@ class JsonStore:
         with _WRITE_LOCK:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.state_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
+            try:
+                from secret_store import protect_state
+
+                payload = protect_state(self.state)
+            except Exception:
+                payload = self.state
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(self.state_path)
 
     def append_log(self, event_type: str, message: str, **details: Any) -> None:

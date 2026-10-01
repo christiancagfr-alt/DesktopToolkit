@@ -76,8 +76,9 @@ export default {
     if (path === "/ws") {
       ctx.waitUntil(bumpDayCounter());
       const room = (url.searchParams.get("room") || "").trim().toUpperCase();
-      if (!room || room.length < 4) {
-        return new Response("room required (?room=ABCD)", { status: 400 });
+      // Alphanumeric room codes only — reject path/injection-like values
+      if (!room || room.length < 4 || room.length > 32 || !/^[A-Z0-9]+$/.test(room)) {
+        return new Response("room required (?room=ABCD, 4-32 A-Z0-9)", { status: 400 });
       }
       if (request.headers.get("Upgrade") !== "websocket") {
         return new Response("expected websocket", { status: 426 });
