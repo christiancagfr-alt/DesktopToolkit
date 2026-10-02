@@ -1061,9 +1061,12 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.lbl_prefs_status)
 
         lay.addWidget(QLabel("快捷键", objectName="section"))
-        lay.addWidget(
-            QLabel("Ctrl+Alt+T 主窗口 · 截图快捷键在「截图」页设置", objectName="muted")
+        hk_tip = (
+            "Ctrl+Alt+T 主窗口 · 截图快捷键在「截图」页设置。"
+            "macOS / Linux 使用全局热键；若无效，请在系统隐私设置中允许本应用的"
+            "「辅助功能」与「输入监控」（macOS）。"
         )
+        lay.addWidget(QLabel(hk_tip, objectName="muted"))
 
         lay.addWidget(QLabel("版本与更新", objectName="section"))
         try:

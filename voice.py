@@ -132,5 +132,10 @@ class SubtitleToast(QWidget):
                 g.bottom() - self.height() - 80,
             )
         self.show()
-        self.raise_()
+        # Avoid raise_() on macOS/Linux — it can activate the whole app and
+        # pull the main hub in front of other software.
+        import sys
+
+        if sys.platform.startswith("win"):
+            self.raise_()
         self._hide_timer.start(ms)

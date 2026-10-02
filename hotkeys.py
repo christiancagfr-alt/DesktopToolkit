@@ -1,8 +1,8 @@
 """Global hotkeys for Desktop Toolkit (screenshot + open hub).
 
 Windows: RegisterHotKey (system-wide even when app unfocused).
-macOS / Linux: QShortcut with ApplicationShortcut (works while app is running;
-  may need Accessibility / Input Monitoring permission on macOS).
+macOS / Linux: pynput GlobalHotKeys (true global; macOS needs Accessibility /
+  Input Monitoring permission for the app).
 """
 
 from __future__ import annotations
@@ -85,6 +85,38 @@ def _normalize_qt_combo(combo: str) -> str:
     return "+".join(mapped)
 
 
+def _to_pynput_hotkey(combo: str) -> str | None:
+    """Convert 'Ctrl+Alt+A' → '<ctrl>+<alt>+a' for pynput.GlobalHotKeys."""
+    s = (combo or "").strip()
+    if not s:
+        return None
+    parts = [p.strip() for p in s.replace(" ", "").split("+") if p.strip()]
+    out: list[str] = []
+    key: str | None = None
+    for p in parts:
+        up = p.upper()
+        if up in ("CTRL", "CONTROL") or p == "⌃":
+            out.append("<ctrl>")
+        elif up in ("ALT", "OPTION", "OPT") or p == "⌥":
+            out.append("<alt>")
+        elif up == "SHIFT":
+            out.append("<shift>")
+        elif up in ("CMD", "COMMAND", "META", "WIN") or p == "⌘":
+            out.append("<cmd>" if sys.platform == "darwin" else "<cmd>")
+        elif up == "SPACE":
+            key = "<space>"
+        elif up.startswith("F") and up[1:].isdigit():
+            key = f"<{up.lower()}>"
+        elif len(p) == 1:
+            key = p.lower()
+        else:
+            return None
+    if not key:
+        return None
+    out.append(key)
+    return "+".join(out)
+
+
 class _Filter(QAbstractNativeEventFilter):
     def __init__(self, handlers: dict[int, Callable[[], None]]) -> None:
         super().__init__()
@@ -133,7 +165,11 @@ class ToolkitHotkeys:
         self._filter = None
         self._qt_shortcuts: list[QShortcut] = []
         self._qt_host: QWidget | None = None
+        self._qt_shot_map: list[tuple[QShortcut, int]] = []
+        self._pynput_listener = None
+        self._shots_paused = False
         self._use_win = sys.platform == "win32" and _user32() is not None
+        self._use_pynput = not self._use_win
 
         if self._use_win:
             self._filter = _Filter(self._handlers)
@@ -142,7 +178,7 @@ class ToolkitHotkeys:
                 app.installNativeEventFilter(self._filter)
             self._register_all()
         else:
-            self._register_qt_all()
+            self._register_global_unix()
 
     # ---- Windows RegisterHotKey ----
     def _unregister(self) -> None:
@@ -157,9 +193,12 @@ class ToolkitHotkeys:
         self._ids.clear()
 
     def _unregister_shots(self) -> None:
+        if self._use_pynput:
+            self._shots_paused = True
+            self._register_global_unix(include_shots=False)
+            return
         if not self._use_win:
-            # Qt: disable shot shortcuts only
-            for sc, hid in getattr(self, "_qt_shot_map", []):
+            for sc, _hid in getattr(self, "_qt_shot_map", []):
                 try:
                     sc.setEnabled(False)
                 except Exception:
@@ -204,7 +243,104 @@ class ToolkitHotkeys:
             if u.RegisterHotKey(None, hid, int(mods), int(vk)):
                 self._ids.append(hid)
 
-    # ---- Qt ApplicationShortcut (macOS / Linux) ----
+    def _register_shots_only(self) -> None:
+        u = _user32()
+        if not u:
+            return
+        self._unregister_shots()
+        import ctypes
+        from ctypes import wintypes
+
+        try:
+            u.RegisterHotKey.argtypes = [
+                wintypes.HWND,
+                ctypes.c_int,
+                ctypes.c_uint,
+                ctypes.c_uint,
+            ]
+            u.RegisterHotKey.restype = wintypes.BOOL
+        except Exception:
+            pass
+        for hid, combo, default in (
+            (HOTKEY_SHOT_REGION, self.region_combo, (MOD_CONTROL | MOD_ALT, ord("A"))),
+            (HOTKEY_SHOT_FULL, self.full_combo, (MOD_CONTROL | MOD_ALT | MOD_SHIFT, ord("A"))),
+        ):
+            parsed = parse_hotkey_combo(combo) or default
+            mods, vk = parsed
+            if u.RegisterHotKey(None, hid, int(mods), int(vk)):
+                self._ids.append(hid)
+
+    # ---- macOS / Linux: pynput global hotkeys ----
+    def _qt_invoke(self, fn: Callable[[], None]) -> Callable[[], None]:
+        def _wrap() -> None:
+            QTimer.singleShot(0, fn)
+
+        return _wrap
+
+    def _stop_pynput(self) -> None:
+        listener = self._pynput_listener
+        self._pynput_listener = None
+        if listener is None:
+            return
+        try:
+            listener.stop()
+        except Exception:
+            pass
+
+    def _register_global_unix(self, *, include_shots: bool = True) -> None:
+        """Bind system-wide hotkeys via pynput (works while other apps are focused)."""
+        self._stop_pynput()
+        self._ids.clear()
+        mapping: dict[str, Callable[[], None]] = {}
+
+        def _add(combo: str, hid: int, handler: Callable[[], None]) -> bool:
+            key = _to_pynput_hotkey(combo)
+            if not key:
+                return False
+            mapping[key] = self._qt_invoke(handler)
+            if hid not in self._ids:
+                self._ids.append(hid)
+            return True
+
+        ok_h = _add(self.hub_combo or "Ctrl+Alt+T", HOTKEY_HUB, self.open_hub)
+        ok_r = ok_f = False
+        if include_shots and not self._shots_paused:
+            ok_r = _add(
+                self.region_combo or "Ctrl+Alt+A",
+                HOTKEY_SHOT_REGION,
+                self.shot_region,
+            )
+            ok_f = _add(
+                self.full_combo or "Ctrl+Alt+Shift+A",
+                HOTKEY_SHOT_FULL,
+                self.shot_full,
+            )
+
+        if not mapping:
+            # Fallback: in-app Qt shortcuts if pynput mapping failed entirely
+            self._register_qt_all()
+            return
+
+        try:
+            from pynput import keyboard
+
+            listener = keyboard.GlobalHotKeys(mapping)
+            listener.start()
+            self._pynput_listener = listener
+        except Exception:
+            # Fall back to ApplicationShortcut (only while Toolkit is focused)
+            self._register_qt_all()
+            return
+
+        # Keep Qt ids for status reporting
+        if ok_h and HOTKEY_HUB not in self._ids:
+            self._ids.append(HOTKEY_HUB)
+        if ok_r and HOTKEY_SHOT_REGION not in self._ids:
+            self._ids.append(HOTKEY_SHOT_REGION)
+        if ok_f and HOTKEY_SHOT_FULL not in self._ids:
+            self._ids.append(HOTKEY_SHOT_FULL)
+
+    # ---- Qt ApplicationShortcut fallback ----
     def _ensure_qt_host(self) -> QWidget | None:
         app = QApplication.instance()
         if app is None:
@@ -250,58 +386,34 @@ class ToolkitHotkeys:
     def _register_qt_all(self) -> None:
         self._clear_qt()
         self._qt_shot_map = []
-        ok_h = self._bind_qt(self.hub_combo or "Ctrl+Alt+T", self.open_hub, HOTKEY_HUB)
-        ok_r = self._bind_qt(
+        self._bind_qt(self.hub_combo or "Ctrl+Alt+T", self.open_hub, HOTKEY_HUB)
+        self._bind_qt(
             self.region_combo or "Ctrl+Alt+A", self.shot_region, HOTKEY_SHOT_REGION, shot=True
         )
-        ok_f = self._bind_qt(
+        self._bind_qt(
             self.full_combo or "Ctrl+Alt+Shift+A", self.shot_full, HOTKEY_SHOT_FULL, shot=True
         )
-        # Keep ids consistent even if one fails — still mark success if any bound
-        if ok_h or ok_r or ok_f:
-            pass
 
     def pause_screenshot_hotkeys(self) -> None:
         """Free shot combos so capture widgets can receive those keys."""
         self._unregister_shots()
 
     def resume_screenshot_hotkeys(self) -> None:
+        if self._use_pynput:
+            self._shots_paused = False
+            self._register_global_unix(include_shots=True)
+            return
         if not self._use_win:
             for sc, _hid in getattr(self, "_qt_shot_map", []):
                 try:
                     sc.setEnabled(True)
                 except Exception:
                     pass
-            # Re-add ids if missing
             for hid in (HOTKEY_SHOT_REGION, HOTKEY_SHOT_FULL):
                 if hid not in self._ids:
                     self._ids.append(hid)
             return
-        u = _user32()
-        if not u:
-            return
-        self._unregister_shots()
-        import ctypes
-        from ctypes import wintypes
-
-        try:
-            u.RegisterHotKey.argtypes = [
-                wintypes.HWND,
-                ctypes.c_int,
-                ctypes.c_uint,
-                ctypes.c_uint,
-            ]
-            u.RegisterHotKey.restype = wintypes.BOOL
-        except Exception:
-            pass
-        for hid, combo, default in (
-            (HOTKEY_SHOT_REGION, self.region_combo, (MOD_CONTROL | MOD_ALT, ord("A"))),
-            (HOTKEY_SHOT_FULL, self.full_combo, (MOD_CONTROL | MOD_ALT | MOD_SHIFT, ord("A"))),
-        ):
-            parsed = parse_hotkey_combo(combo) or default
-            mods, vk = parsed
-            if u.RegisterHotKey(None, hid, int(mods), int(vk)):
-                self._ids.append(hid)
+        self._register_shots_only()
 
     def rebind(self, hub: str | None = None, region: str | None = None, full: str | None = None) -> str:
         if hub is not None:
@@ -312,20 +424,20 @@ class ToolkitHotkeys:
             self.full_combo = full
         if self._use_win:
             self._register_all()
+        elif self._use_pynput:
+            self._register_global_unix(include_shots=not self._shots_paused)
         else:
             self._register_qt_all()
         r_ok = HOTKEY_SHOT_REGION in self._ids
         f_ok = HOTKEY_SHOT_FULL in self._ids
         h_ok = HOTKEY_HUB in self._ids
         if not self._use_win:
-            # On Mac/Linux, saving combos always succeeds for preferences;
-            # binding uses Qt ApplicationShortcut while app is running.
             plat = "macOS" if sys.platform == "darwin" else "Linux"
-            note = "已保存（应用运行时生效"
+            note = "已保存（全局快捷键，其它应用前台时也可用"
             if sys.platform == "darwin":
-                note += "；若无效请在「系统设置→隐私与安全→辅助功能/输入监控」允许本应用"
+                note += "；若无效请到「系统设置→隐私与安全→辅助功能」和「输入监控」允许本应用"
             note += "）"
-            status = "OK" if (r_ok and f_ok) else "部分生效"
+            status = "OK" if (r_ok and f_ok and h_ok) else "部分生效"
             return (
                 f"{plat} 快捷键{status} · 面板 {self.hub_combo} · "
                 f"区域 {self.region_combo} · 全屏 {self.full_combo} · {note}"
@@ -340,4 +452,5 @@ class ToolkitHotkeys:
         if self._use_win:
             self._unregister()
         else:
+            self._stop_pynput()
             self._clear_qt()

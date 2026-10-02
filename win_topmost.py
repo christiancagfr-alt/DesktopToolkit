@@ -1,4 +1,4 @@
-"""Force a Qt widget to stay above other windows (Windows HWND_TOPMOST)."""
+"""Force a Qt widget to stay above other windows without stealing focus."""
 
 from __future__ import annotations
 
@@ -6,8 +6,15 @@ import sys
 from typing import Any
 
 
-def force_topmost(widget: Any) -> bool:
-    """Re-assert topmost z-order. Safe no-op if widget is missing/hidden."""
+def force_topmost(widget: Any, *, activate: bool = False) -> bool:
+    """Re-assert topmost z-order.
+
+    On Windows uses HWND_TOPMOST with SWP_NOACTIVATE.
+    On macOS / Linux: do **not** call raise_() by default — that activates the
+    whole Qt application and pulls the main hub in front of other apps.
+    ``WindowStaysOnTopHint`` already keeps the float above; periodic raise was
+    the focus-stealing bug.
+    """
     if widget is None:
         return False
     try:
@@ -16,13 +23,19 @@ def force_topmost(widget: Any) -> bool:
     except Exception:
         return False
 
-    try:
-        widget.raise_()
-    except Exception:
-        pass
-
     if sys.platform != "win32":
+        if activate:
+            try:
+                widget.raise_()
+            except Exception:
+                pass
         return True
+
+    if activate:
+        try:
+            widget.raise_()
+        except Exception:
+            pass
 
     try:
         import win32con  # type: ignore

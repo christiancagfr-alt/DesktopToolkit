@@ -179,34 +179,39 @@ class FloatingAssistant(QWidget):
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self._maybe_hide_menu)
 
-        # Other always-on-top windows can steal z-order; reassert gently.
-        # Never while dragging — SetWindowPos would interrupt mouse move.
+        # Windows: other always-on-top windows can steal z-order; reassert gently.
+        # macOS/Linux: do NOT periodically raise — that activates the whole app
+        # and pulls the main hub in front of whatever the user is working on.
         self._topmost_timer = QTimer(self)
         self._topmost_timer.setTimerType(Qt.TimerType.CoarseTimer)
         self._topmost_timer.timeout.connect(self._reassert_topmost)
-        self._topmost_timer.start(2500)
+        if sys.platform.startswith("win"):
+            self._topmost_timer.start(2500)
 
         self._restore_or_place()
         self.show()
-        QTimer.singleShot(0, self._reassert_topmost)
+        if sys.platform.startswith("win"):
+            QTimer.singleShot(0, self._reassert_topmost)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
-        if not self._drag:
+        if (not self._drag) and sys.platform.startswith("win"):
             QTimer.singleShot(0, self._reassert_topmost)
 
     def _reassert_topmost(self) -> None:
         if self._drag:
             return
-        force_topmost(self)
+        # activate=False: never steal focus from other applications
+        force_topmost(self, activate=False)
         if self.menu.isVisible():
-            force_topmost(self.menu)
+            force_topmost(self.menu, activate=False)
 
     def bring_to_front(self) -> None:
         """Tray / prefs: show logo and force it above other windows."""
         self.show()
+        # User explicitly asked to find the robot — activating is OK here.
         self.raise_()
-        self._reassert_topmost()
+        force_topmost(self, activate=True)
 
     def _prefs(self) -> dict:
         try:
@@ -290,9 +295,10 @@ class FloatingAssistant(QWidget):
         self._hide_timer.stop()
         self._position_menu()
         self.menu.show()
+        # Menu open is a user gesture; raise menu only (avoid activating hub).
         self.menu.raise_()
-        force_topmost(self)
-        force_topmost(self.menu)
+        force_topmost(self, activate=False)
+        force_topmost(self.menu, activate=False)
         self._menu_visible = True
         # Auto-hide only when leaving the menu itself (not when hovering the logo)
         self.menu.enterEvent = lambda e: self._hide_timer.stop()  # type: ignore
