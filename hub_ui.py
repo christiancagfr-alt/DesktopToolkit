@@ -1023,34 +1023,20 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.chk_autostart)
 
         try:
-            from float_assistant import (
-                default_float_assistant_enabled,
-                float_assistant_supported,
-            )
+            from float_assistant import default_float_assistant_enabled
 
             float_default = default_float_assistant_enabled()
-            float_ok = float_assistant_supported()
         except Exception:
             float_default = True
-            float_ok = True
         self.chk_float_logo = QCheckBox("显示悬浮机器人助手（可拖动，记住位置）")
-        self.chk_float_logo.setChecked(
-            bool(prefs.get("float_assistant", float_default)) if float_ok else False
-        )
+        self.chk_float_logo.setChecked(bool(prefs.get("float_assistant", float_default)))
         self.chk_float_logo.toggled.connect(self._on_float_logo)
         lay.addWidget(self.chk_float_logo)
-        if float_ok:
-            tip_a = QLabel(
-                "悬停打开快捷菜单；拖到任意位置后会记住。"
-                "会定时保持在其它窗口前面；若仍被盖住，可用托盘「找回悬浮机器人」。"
-                "独占全屏游戏期间系统可能压过置顶。"
-            )
-        else:
-            tip_a = QLabel(
-                "当前系统（macOS / Linux）不显示桌面悬浮机器人，仅保留主窗口与托盘入口。"
-            )
-            self.chk_float_logo.setEnabled(False)
-            self.chk_float_logo.setChecked(False)
+        tip_a = QLabel(
+            "单击打开/关闭快捷菜单；拖到任意位置后会记住。"
+            "会定时保持在其它窗口前面；若仍被盖住，可用托盘「找回悬浮机器人」。"
+            "Windows / macOS / Linux 均支持显示。"
+        )
         tip_a.setObjectName("muted")
         tip_a.setWordWrap(True)
         lay.addWidget(tip_a)
@@ -1150,6 +1136,7 @@ class MainWindow(QMainWindow):
 
     def _on_float_logo(self, on: bool) -> None:
         self._prefs()["float_assistant"] = bool(on)
+        self._prefs()["float_assistant_user_set"] = True
         self.host.store.save_state()
         try:
             self.host.set_float_assistant_visible(bool(on))

@@ -2,7 +2,7 @@
 ; Builds a double-click Setup.exe from dist\DesktopToolkit\
 
 #define MyAppName "Desktop Toolkit"
-#define MyAppVersion "1.9.6"
+#define MyAppVersion "1.9.7"
 #define MyAppPublisher "Desktop Toolkit"
 #define MyAppURL "https://github.com/secure-artifacts/DesktopToolkit"
 #define MyAppExeName "DesktopToolkit.exe"

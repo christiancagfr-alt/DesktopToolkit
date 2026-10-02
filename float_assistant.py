@@ -37,13 +37,27 @@ def _menu_icon(name: str) -> Path | None:
 
 
 def float_assistant_supported() -> bool:
-    """Floating robot is Windows-only (hidden on macOS and Linux)."""
-    return sys.platform.startswith("win")
+    """Floating robot is available on Windows, macOS, and Linux."""
+    return True
 
 
 def default_float_assistant_enabled() -> bool:
-    # macOS/Linux: never show the desktop robot by default (and init also skips).
-    return float_assistant_supported()
+    return True
+
+
+def _float_window_flags() -> Qt.WindowType:
+    """Frameless always-on-top flags that stay visible on each OS.
+
+    On macOS, ``Qt.Tool`` windows are hidden when the app is inactive, which
+    looked like the robot never appeared. Use a normal top-level window there
+    (and on Linux WMs that mishandle Tool).
+    """
+    flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+    if sys.platform.startswith("win"):
+        flags |= Qt.WindowType.Tool
+    else:
+        flags |= Qt.WindowType.Window
+    return flags
 
 
 class FloatingAssistant(QWidget):
@@ -57,12 +71,13 @@ class FloatingAssistant(QWidget):
         self._drag_offset = QPoint()
         self._menu_visible = False
         self.setWindowTitle("Toolkit Assistant")
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
+        self.setWindowFlags(_float_window_flags())
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # Keep the float visible in all Spaces / virtual desktops when possible.
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        except Exception:
+            pass
         self.setFixedSize(78, 78)
         self.setToolTip("拖动移动 · 单击打开/关闭菜单 · 双击打开主界面")
 
@@ -93,13 +108,9 @@ class FloatingAssistant(QWidget):
                 "QLabel { background: transparent; border: none; font-size: 36px; }"
             )
 
-        # Hover menu (separate top-level so it can sit above logo)
+        # Shortcut menu (separate top-level so it can sit above logo)
         self.menu = QFrame(None)
-        self.menu.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
+        self.menu.setWindowFlags(_float_window_flags())
         self.menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.menu.setStyleSheet(
             """

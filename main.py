@@ -139,17 +139,24 @@ class ToolkitApp(QObject):
 
     def _init_assistant(self) -> None:
         try:
-            from float_assistant import (
-                default_float_assistant_enabled,
-                float_assistant_supported,
-            )
+            from float_assistant import default_float_assistant_enabled
 
-            if not float_assistant_supported():
-                return
             float_default = default_float_assistant_enabled()
         except Exception:
-            float_default = sys.platform.startswith("win")
-        if not self._prefs().get("float_assistant", float_default):
+            float_default = True
+        # Migrate older prefs that forced the float off on macOS/Linux.
+        prefs = self._prefs()
+        if (
+            not sys.platform.startswith("win")
+            and prefs.get("float_assistant") is False
+            and prefs.get("float_assistant_user_set") is not True
+        ):
+            prefs["float_assistant"] = True
+            try:
+                self.store.save_state()
+            except Exception:
+                pass
+        if not prefs.get("float_assistant", float_default):
             return
         try:
             self.assistant = FloatingAssistant(self)
@@ -157,14 +164,13 @@ class ToolkitApp(QObject):
             traceback.print_exc()
 
     def set_float_assistant_visible(self, visible: bool) -> None:
+        prefs = self._prefs()
+        prefs["float_assistant"] = bool(visible)
+        prefs["float_assistant_user_set"] = True
         try:
-            from float_assistant import float_assistant_supported
-
-            if visible and not float_assistant_supported():
-                visible = False
+            self.store.save_state()
         except Exception:
-            if visible and not sys.platform.startswith("win"):
-                visible = False
+            pass
         if visible:
             if self.assistant is None:
                 self.assistant = FloatingAssistant(self)
@@ -175,17 +181,9 @@ class ToolkitApp(QObject):
             self.assistant.hide()
 
     def bring_float_assistant_front(self) -> None:
-        """Tray: ensure floating robot is visible and topmost (Windows only)."""
-        try:
-            from float_assistant import float_assistant_supported
-
-            if not float_assistant_supported():
-                self.announce("当前系统不显示悬浮机器人")
-                return
-        except Exception:
-            if not sys.platform.startswith("win"):
-                return
+        """Tray: ensure floating robot is visible and topmost."""
         self._prefs()["float_assistant"] = True
+        self._prefs()["float_assistant_user_set"] = True
         try:
             self.store.save_state()
         except Exception:
