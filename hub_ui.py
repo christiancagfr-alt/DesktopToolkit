@@ -1348,7 +1348,7 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl(RELEASES_PAGE))
         except Exception:
             QDesktopServices.openUrl(
-                QUrl("https://github.com/secure-artifacts/DesktopToolkit/releases/latest")
+                QUrl("https://github.com/christiancagfr-alt/DesktopToolkit/releases/latest")
             )
 
     def _open_release_page(self) -> None:

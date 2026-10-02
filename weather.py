@@ -100,7 +100,7 @@ _WMO_ZH: dict[int, str] = {
 def _http_json(url: str, *, timeout: float = 12.0) -> Any:
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "DesktopToolkit/1.2.1 (weather; +https://github.com/secure-artifacts/DesktopToolkit)"},
+        headers={"User-Agent": "DesktopToolkit/1.9.8 (weather; +https://github.com/christiancagfr-alt/DesktopToolkit)"},
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
