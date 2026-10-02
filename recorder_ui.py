@@ -42,6 +42,7 @@ from PyQt6.QtWidgets import (
 )
 
 import screen_recorder
+from ui_platform import interactive_overlay_flags
 
 
 class _PreviewBridge(QObject):
@@ -63,11 +64,7 @@ class RecordingDrawOverlay(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
+        self.setWindowFlags(interactive_overlay_flags())
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
         self.setMouseTracking(True)
@@ -386,11 +383,7 @@ class RecordingControlBar(QWidget):
     def __init__(self, board: "FloatingRecorderBoard", parent=None):
         super().__init__(parent)
         self.board = board
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
+        self.setWindowFlags(interactive_overlay_flags())
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setStyleSheet(
             """
@@ -455,7 +448,13 @@ class RecordingControlBar(QWidget):
         self._collapse_timer.setSingleShot(True)
         self._collapse_timer.timeout.connect(self._auto_collapse)
         self.lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         QTimer.singleShot(0, self._exclude_from_capture)
+        # Keep the bar above other Toolkit windows on macOS/Linux without
+        # activating the main hub (force_topmost activate=False).
+        self._top_timer = QTimer(self)
+        self._top_timer.setInterval(2000)
+        self._top_timer.timeout.connect(self._keep_clickable)
 
     def _auto_collapse(self) -> None:
         """Hide full toolbar again while still recording (not paused)."""
@@ -469,6 +468,22 @@ class RecordingControlBar(QWidget):
                 self._apply_collapsed_chrome(collapsed=True)
                 self._exclude_from_capture()
                 self._place_outside_capture()
+        except Exception:
+            pass
+
+    def _keep_clickable(self) -> None:
+        """Re-assert z-order so expand/stop remain clickable while recording.
+
+        On macOS/Linux, skip raise_() here — periodic raise activates the whole
+        Qt app and steals focus from the window being recorded. WindowStaysOnTop
+        (via interactive_overlay_flags) is enough once the bar is shown.
+        """
+        if not self.isVisible():
+            return
+        try:
+            from win_topmost import force_topmost
+
+            force_topmost(self, activate=False)
         except Exception:
             pass
 
@@ -520,8 +535,17 @@ class RecordingControlBar(QWidget):
         """
         if not recording:
             self._expanded = False
+            try:
+                self._top_timer.stop()
+            except Exception:
+                pass
             self.hide()
             return
+        try:
+            if not self._top_timer.isActive():
+                self._top_timer.start()
+        except Exception:
+            pass
         self.lbl.setText("⏸ 已暂停" if paused else "🔴 录制中")
         self.btn_pause.setText("继续" if paused else "暂停")
         # Paused → always show full bar (user needs controls); recording → collapsed
@@ -530,6 +554,7 @@ class RecordingControlBar(QWidget):
         self._apply_collapsed_chrome(collapsed=not self._expanded)
         self.show()
         self.raise_()
+        self._keep_clickable()
         self._exclude_from_capture()
         self._place_outside_capture()
         if self._expanded and not paused:
@@ -627,11 +652,7 @@ class FloatingRecorderBoard(QWidget):
         self.control_bar = RecordingControlBar(self)
 
         if not embedded:
-            self.setWindowFlags(
-                Qt.WindowType.FramelessWindowHint
-                | Qt.WindowType.WindowStaysOnTopHint
-                | Qt.WindowType.Tool
-            )
+            self.setWindowFlags(interactive_overlay_flags())
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
             self.resize(420, 620)
         else:
@@ -1403,6 +1424,16 @@ class FloatingRecorderBoard(QWidget):
         target = self._current_target()
         if not target:
             self._set_status("请选择录制目标")
+            return
+        ok_cap, cap_msg = screen_recorder.screen_capture_permission_ok(target)
+        if not ok_cap:
+            self._set_status(cap_msg)
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+
+                QMessageBox.warning(self, "无法录制屏幕", cap_msg)
+            except Exception:
+                pass
             return
         res = self.cmb_res.currentData() or "1080p"
         fps = int(self.spin_fps.value())

@@ -10,6 +10,8 @@ Capture uses virtual desktop (multi-monitor). Editing is on a fullscreen overlay
 from __future__ import annotations
 
 import math
+import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -18,6 +20,7 @@ from typing import Callable
 
 import numpy as np
 from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
+from ui_platform import interactive_overlay_flags
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -78,26 +81,69 @@ def virtual_desktop_geometry() -> QRect:
     return geo
 
 
-def capture_virtual_desktop() -> tuple[QPixmap, QRect]:
-    """Grab entire virtual desktop. Returns (pixmap, geometry in global coords)."""
-    geo = virtual_desktop_geometry()
-    if mss is not None:
-        with mss.mss() as sct:
-            mon = sct.monitors[0]  # all monitors
-            shot = sct.grab(mon)
-            # BGRA -> RGBA
-            arr = np.frombuffer(shot.raw, dtype=np.uint8).reshape(shot.height, shot.width, 4).copy()
-            # mss is BGRA
-            rgba = arr[:, :, [2, 1, 0, 3]].copy()
-            img = QImage(rgba.data, shot.width, shot.height, shot.width * 4, QImage.Format.Format_RGBA8888).copy()
-            left, top = mon["left"], mon["top"]
-            return QPixmap.fromImage(img), QRect(left, top, shot.width, shot.height)
-    # Fallback: Qt primary / stitched screens
+def _pixmap_is_blank(pm: QPixmap) -> bool:
+    """True if capture is almost entirely black or white (common without Screen Recording permission)."""
+    if pm.isNull() or pm.width() < 2 or pm.height() < 2:
+        return True
+    img = pm.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+    w, h = img.width(), img.height()
+    step_x = max(1, w // 64)
+    step_y = max(1, h // 64)
+    total = 0
+    dark = 0
+    bright = 0
+    for y in range(0, h, step_y):
+        for x in range(0, w, step_x):
+            c = img.pixelColor(x, y)
+            # ignore near-transparent
+            if c.alpha() < 8:
+                continue
+            total += 1
+            lum = (c.red() + c.green() + c.blue()) / 3.0
+            if lum < 8:
+                dark += 1
+            elif lum > 247:
+                bright += 1
+    if total < 10:
+        return True
+    return (dark / total) > 0.96 or (bright / total) > 0.96
+
+
+def _capture_via_screencapture(geo: QRect) -> QPixmap | None:
+    """macOS screencapture CLI — reliable once Screen Recording permission is granted."""
+    if sys.platform != "darwin":
+        return None
+    path = Path(tempfile.mkdtemp(prefix="dt_shot_")) / "shot.png"
+    cmd = [
+        "screencapture",
+        "-x",
+        "-t",
+        "png",
+        "-R",
+        f"{int(geo.x())},{int(geo.y())},{int(geo.width())},{int(geo.height())}",
+        str(path),
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=20)
+        if r.returncode != 0 or not path.is_file() or path.stat().st_size < 64:
+            return None
+        pm = QPixmap(str(path))
+        try:
+            path.unlink(missing_ok=True)
+            path.parent.rmdir()
+        except Exception:
+            pass
+        if pm.isNull() or _pixmap_is_blank(pm):
+            return None
+        return pm
+    except Exception:
+        return None
+
+
+def _capture_via_qt_stitch(geo: QRect) -> QPixmap:
     screens = QGuiApplication.screens()
     if not screens:
         raise RuntimeError("没有可用的显示器")
-    # stitch
-    geo = virtual_desktop_geometry()
     out = QPixmap(geo.width(), geo.height())
     out.fill(Qt.GlobalColor.black)
     painter = QPainter(out)
@@ -106,7 +152,52 @@ def capture_virtual_desktop() -> tuple[QPixmap, QRect]:
         pm = screen.grabWindow(0)
         painter.drawPixmap(g.x() - geo.x(), g.y() - geo.y(), pm)
     painter.end()
-    return out, geo
+    return out
+
+
+def capture_virtual_desktop() -> tuple[QPixmap, QRect]:
+    """Grab entire virtual desktop. Returns (pixmap, geometry in global coords)."""
+    geo = virtual_desktop_geometry()
+    permission_hint = (
+        "截图失败：画面为空白。请到「系统设置 → 隐私与安全 → 屏幕录制」中允许 Desktop Toolkit，"
+        "然后完全退出应用再重试。"
+        if sys.platform == "darwin"
+        else "截图失败：无法捕获屏幕画面。"
+    )
+
+    # 1) mss (fast when Screen Recording permission is granted)
+    if mss is not None:
+        try:
+            with mss.mss() as sct:
+                mon = sct.monitors[0]  # all monitors
+                shot = sct.grab(mon)
+                arr = np.frombuffer(shot.raw, dtype=np.uint8).reshape(shot.height, shot.width, 4).copy()
+                rgba = arr[:, :, [2, 1, 0, 3]].copy()
+                img = QImage(
+                    rgba.data, shot.width, shot.height, shot.width * 4, QImage.Format.Format_RGBA8888
+                ).copy()
+                left, top = mon["left"], mon["top"]
+                pm = QPixmap.fromImage(img)
+                if not _pixmap_is_blank(pm):
+                    return pm, QRect(left, top, shot.width, shot.height)
+        except Exception:
+            pass
+
+    # 2) macOS screencapture (asks / uses Screen Recording permission)
+    if sys.platform == "darwin":
+        pm = _capture_via_screencapture(geo)
+        if pm is not None:
+            return pm, geo
+
+    # 3) Qt stitch (often black on modern macOS without permission)
+    try:
+        pm = _capture_via_qt_stitch(geo)
+        if not _pixmap_is_blank(pm):
+            return pm, geo
+    except Exception:
+        pass
+
+    raise RuntimeError(permission_hint)
 
 
 # ---------------------------------------------------------------------------
@@ -199,11 +290,7 @@ class PinnedShot(QWidget):
 
     def __init__(self, pixmap: QPixmap, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
+        self.setWindowFlags(interactive_overlay_flags())
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._pm = pixmap
         self.resize(pixmap.size())
@@ -258,18 +345,14 @@ class ScreenshotEditor(QWidget):
         self.mode = mode
         self.cfg = cfg if isinstance(cfg, dict) else {}
         self.on_upload = on_upload
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
+        self.setWindowFlags(interactive_overlay_flags())
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setGeometry(desk_geo)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         # Keep mouse events even after clicking toolbar buttons
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        # Tool windows often miss wheel without focus — track app-level wheels while open
+        # Overlay windows often miss wheel without focus — track app-level wheels while open
         self._wheel_filter_installed = False
 
         # phase: "select" = aim crosshair + drag region; "edit" = multi-tool annotation

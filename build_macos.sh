@@ -42,6 +42,7 @@ python3 -m PyInstaller --noconfirm --windowed --name DesktopToolkit \
   --hidden-import remote_lan_ui \
   --hidden-import pynput \
   --hidden-import PIL \
+  --hidden-import ui_platform \
   --exclude-module torch \
   --exclude-module tensorflow \
   --exclude-module matplotlib \
@@ -59,6 +60,18 @@ if [[ ! -d "$APP" ]]; then
   echo "WARNING: .app not found — check dist/ and run PyInstaller output"
   ls -la dist || true
   exit 1
+fi
+
+# TCC usage strings so macOS can prompt for mic / document screen capture intent
+PLIST="$APP/Contents/Info.plist"
+if [[ -f "$PLIST" ]]; then
+  /usr/libexec/PlistBuddy -c "Delete :NSMicrophoneUsageDescription" "$PLIST" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string Desktop Toolkit needs the microphone to record narration with screen capture." "$PLIST"
+  /usr/libexec/PlistBuddy -c "Delete :NSScreenCaptureUsageDescription" "$PLIST" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Add :NSScreenCaptureUsageDescription string Desktop Toolkit needs Screen Recording permission for screenshots and screen recording. Grant it under System Settings → Privacy & Security → Screen Recording, then fully quit and relaunch the app." "$PLIST"
+  /usr/libexec/PlistBuddy -c "Delete :NSAppleEventsUsageDescription" "$PLIST" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Add :NSAppleEventsUsageDescription string Desktop Toolkit may use automation helpers for capture workflows." "$PLIST"
+  echo "Patched Info.plist TCC usage descriptions"
 fi
 
 ZIP="$OUT/DesktopToolkit-${VER}-macos.zip"

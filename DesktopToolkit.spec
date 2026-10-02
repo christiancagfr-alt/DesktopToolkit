@@ -45,6 +45,7 @@ a = Analysis(
         "hub_ui",
         "float_assistant",
         "win_topmost",
+        "ui_platform",
         "rustdesk_bridge",
         "remote_lan_ui",
         "lan_remote",

@@ -407,8 +407,77 @@ def _mss_instance():
     return sct
 
 
-def capture_bgr(region: dict | None = None) -> np.ndarray | None:
-    """Capture region as BGR uint8 array. region: left,top,width,height or None for primary."""
+def _bgr_is_blank(frame: np.ndarray | None) -> bool:
+    """Detect all-black / all-white frames (typical without Screen Recording permission)."""
+    if frame is None or frame.size == 0:
+        return True
+    sample = frame[:: max(1, frame.shape[0] // 48), :: max(1, frame.shape[1] // 48)]
+    if sample.size == 0:
+        return True
+    mean = float(sample.mean())
+    return mean < 3.0 or mean > 252.0
+
+
+def _capture_bgr_screencapture(region: dict | None) -> np.ndarray | None:
+    """One-shot macOS screencapture → BGR (slow; for permission probe / fallback only)."""
+    if sys.platform != "darwin":
+        return None
+    path = Path(tempfile.mkdtemp(prefix="dt_rec_")) / "f.png"
+    cmd = ["screencapture", "-x", "-t", "png"]
+    if region:
+        cmd += [
+            "-R",
+            f"{int(region['left'])},{int(region['top'])},{int(region['width'])},{int(region['height'])}",
+        ]
+    cmd.append(str(path))
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=20)
+        if r.returncode != 0 or not path.is_file():
+            return None
+        img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        try:
+            path.unlink(missing_ok=True)
+            path.parent.rmdir()
+        except Exception:
+            pass
+        if img is None or _bgr_is_blank(img):
+            return None
+        return img
+    except Exception:
+        return None
+
+
+def _request_mac_screen_capture_access() -> None:
+    """Ask macOS to show the Screen Recording permission dialog (10.15+)."""
+    if sys.platform != "darwin":
+        return
+    try:
+        import ctypes
+        import ctypes.util
+
+        lib_name = ctypes.util.find_library("CoreGraphics")
+        if not lib_name:
+            return
+        cg = ctypes.cdll.LoadLibrary(lib_name)
+        # bool CGRequestScreenCaptureAccess(void);
+        if hasattr(cg, "CGRequestScreenCaptureAccess"):
+            cg.CGRequestScreenCaptureAccess.restype = ctypes.c_bool
+            cg.CGRequestScreenCaptureAccess()
+    except Exception:
+        pass
+
+
+def capture_bgr(
+    region: dict | None = None,
+    *,
+    allow_slow_fallback: bool = False,
+) -> np.ndarray | None:
+    """Capture region as BGR uint8 array. region: left,top,width,height or None for primary.
+
+    ``allow_slow_fallback`` enables the macOS ``screencapture`` CLI path. Keep it
+    False in the recording / preview loops — that subprocess can take seconds and
+    freezes the UI if called every frame when mss returns a blank (no TCC grant).
+    """
     if mss is not None:
         try:
             sct = _mss_instance()
@@ -426,14 +495,24 @@ def capture_bgr(region: dict | None = None) -> np.ndarray | None:
                 )
             # BGRA -> BGR contiguous
             arr = np.asarray(shot)  # HxWx4 BGRA
-            return np.ascontiguousarray(arr[:, :, :3])
+            bgr = np.ascontiguousarray(arr[:, :, :3])
+            if not _bgr_is_blank(bgr):
+                return bgr
+            # Blank often means missing Screen Recording permission on macOS
+            print("mss capture blank (permission?)", flush=True)
         except Exception as exc:
-            # Reset broken mss handle then fall through to GDI
+            # Reset broken mss handle then fall through
             try:
                 _thread_local.sct = None
             except Exception:
                 pass
             print(f"mss capture failed: {exc}", flush=True)
+
+    # Slow path: only for one-shot permission probes — never per-frame
+    if allow_slow_fallback and sys.platform == "darwin":
+        img = _capture_bgr_screencapture(region)
+        if img is not None:
+            return img
 
     # GDI fallback (Windows only)
     if win32api is None or win32gui is None or win32ui is None or win32con is None:
@@ -494,6 +573,27 @@ def resolve_region(target: dict | None) -> dict | None:
             "height": max(2, int(target["height"])),
         }
     return None
+
+
+def screen_capture_permission_ok(target: dict | None = None) -> tuple[bool, str]:
+    """Probe whether screen pixels can be captured (macOS Screen Recording TCC)."""
+    region = resolve_region(target) if target else None
+    # Fast path first (mss / GDI) — does not spawn screencapture
+    frame = capture_bgr(region, allow_slow_fallback=False)
+    if frame is not None and not _bgr_is_blank(frame):
+        return True, ""
+    if sys.platform == "darwin":
+        _request_mac_screen_capture_access()
+        # One-shot CLI capture triggers / uses the TCC grant
+        frame = capture_bgr(region, allow_slow_fallback=True)
+        if frame is not None and not _bgr_is_blank(frame):
+            return True, ""
+        return (
+            False,
+            "无法捕获屏幕画面（多为白屏/黑屏）。请打开「系统设置 → 隐私与安全 → 屏幕录制」，"
+            "勾选 Desktop Toolkit 后完全退出应用再重试。",
+        )
+    return False, "无法捕获屏幕画面，请检查显示权限后重试。"
 
 
 def draw_cursor_highlight(
@@ -994,6 +1094,7 @@ class ScreenRecorder:
         frame_delay = 1.0 / max(1, self.cfg.fps)
         frames = 0
         last_frame = None
+        blank_streak = 0
         # Absolute pacing: keep video wall-clock duration ≈ audio duration.
         # If capture is slow, duplicate the last frame so muxed video isn't "sped up".
         next_t = time.perf_counter()
@@ -1012,14 +1113,26 @@ class ScreenRecorder:
 
             region = resolve_region(self.cfg.target)
             frame = capture_bgr(region)
-            if frame is None:
-                # Still advance schedule with last good frame if we have one
-                if last_frame is not None:
+            if frame is None or _bgr_is_blank(frame):
+                blank_streak += 1
+                # Do not keep writing white/black frames (looks like "exported white video")
+                if last_frame is not None and blank_streak < self.cfg.fps * 2:
                     frame = last_frame
+                elif blank_streak >= max(8, int(self.cfg.fps)):
+                    if sys.platform == "darwin":
+                        self._error = (
+                            "录制中断：屏幕画面为空。请在「系统设置 → 隐私与安全 → 屏幕录制」"
+                            "允许本应用后，完全退出再重试。"
+                        )
+                    else:
+                        self._error = "录制中断：无法捕获屏幕画面。"
+                    break
                 else:
                     next_t += frame_delay
                     time.sleep(0.01)
                     continue
+            else:
+                blank_streak = 0
 
             # Overlay annotations
             if self.cfg.overlay_provider:

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Bump when shipping a new installer (keep in sync with VERSION file).
-APP_VERSION = "1.9.10"
+APP_VERSION = "1.9.11"
 
 # Public releases channel (personal account — matches where we publish builds)
 GITHUB_REPO = "christiancagfr-alt/DesktopToolkit"

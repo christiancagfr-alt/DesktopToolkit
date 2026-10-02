@@ -37,6 +37,7 @@ python3 -m PyInstaller --noconfirm --windowed --name DesktopToolkit \
   --hidden-import remote_lan_ui \
   --hidden-import pynput \
   --hidden-import PIL \
+  --hidden-import ui_platform \
   --exclude-module torch \
   --exclude-module tensorflow \
   --exclude-module matplotlib \
