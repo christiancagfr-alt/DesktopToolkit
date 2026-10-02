@@ -60,6 +60,8 @@ a = Analysis(
         "notebook_sync",
         "file_organizer",
         "file_organizer_ui",
+        "app_uninstaller",
+        "app_uninstaller_ui",
         "mss",
         "imageio_ffmpeg",
         "websockets",

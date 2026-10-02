@@ -139,11 +139,16 @@ class ToolkitApp(QObject):
 
     def _init_assistant(self) -> None:
         try:
-            from float_assistant import default_float_assistant_enabled
+            from float_assistant import (
+                default_float_assistant_enabled,
+                float_assistant_supported,
+            )
 
+            if not float_assistant_supported():
+                return
             float_default = default_float_assistant_enabled()
         except Exception:
-            float_default = True
+            float_default = sys.platform.startswith("win")
         if not self._prefs().get("float_assistant", float_default):
             return
         try:
@@ -152,6 +157,14 @@ class ToolkitApp(QObject):
             traceback.print_exc()
 
     def set_float_assistant_visible(self, visible: bool) -> None:
+        try:
+            from float_assistant import float_assistant_supported
+
+            if visible and not float_assistant_supported():
+                visible = False
+        except Exception:
+            if visible and not sys.platform.startswith("win"):
+                visible = False
         if visible:
             if self.assistant is None:
                 self.assistant = FloatingAssistant(self)
@@ -162,7 +175,16 @@ class ToolkitApp(QObject):
             self.assistant.hide()
 
     def bring_float_assistant_front(self) -> None:
-        """Tray: ensure floating robot is visible and topmost."""
+        """Tray: ensure floating robot is visible and topmost (Windows only)."""
+        try:
+            from float_assistant import float_assistant_supported
+
+            if not float_assistant_supported():
+                self.announce("当前系统不显示悬浮机器人")
+                return
+        except Exception:
+            if not sys.platform.startswith("win"):
+                return
         self._prefs()["float_assistant"] = True
         try:
             self.store.save_state()
@@ -197,6 +219,7 @@ class ToolkitApp(QObject):
             ("便签", self.show_notes),
             ("笔记本", self.show_notebook),
             ("文件整理", self.show_file_organizer),
+            ("卸载软件", self.show_uninstaller),
             ("清理电脑", self.start_deep_clean),
             ("音乐", self.show_music_player),
         ):
@@ -614,6 +637,17 @@ class ToolkitApp(QObject):
         from file_organizer_ui import show_file_organizer
 
         show_file_organizer(self)
+
+    def show_uninstaller(self) -> None:
+        """Open the Windows software uninstaller page in the hub."""
+        try:
+            self.show_hub()
+            if self.main_win is not None:
+                self.main_win.goto("uninstall")
+                return
+        except Exception:
+            pass
+        self.announce("无法打开卸载软件页面")
 
     def show_alarm_board(self) -> None:
         from alarm_ui import FloatingAlarmBoard

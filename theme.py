@@ -87,6 +87,7 @@ def main_window_qss(mode: str) -> str:
     QPushButton#nav {{
         text-align: left; padding: 10px 12px; border: none; border-radius: 10px;
         background: transparent; color: {t['text']}; font-weight: 700;
+        min-height: 34px;
     }}
     QPushButton#nav:hover {{ background: {t['card']}; }}
     QPushButton#nav:checked {{
@@ -95,6 +96,7 @@ def main_window_qss(mode: str) -> str:
     QPushButton#navChild {{
         text-align: left; padding: 8px 10px; border: none; border-radius: 8px;
         background: transparent; color: {t['muted']}; font-weight: 600; font-size: 12px;
+        min-height: 30px;
     }}
     QPushButton#navChild:hover {{ background: {t['card']}; color: {t['text']}; }}
     QPushButton#navChild:checked {{

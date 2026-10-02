@@ -36,9 +36,14 @@ def _menu_icon(name: str) -> Path | None:
     return p if p.is_file() else None
 
 
+def float_assistant_supported() -> bool:
+    """Floating robot is Windows-only (hidden on macOS and Linux)."""
+    return sys.platform.startswith("win")
+
+
 def default_float_assistant_enabled() -> bool:
-    # macOS users complained about logo stuck on screen — default off there
-    return sys.platform != "darwin"
+    # macOS/Linux: never show the desktop robot by default (and init also skips).
+    return float_assistant_supported()
 
 
 class FloatingAssistant(QWidget):
@@ -137,11 +142,13 @@ class FloatingAssistant(QWidget):
             ("organize", "文件整理", self._act_organize),
             ("pomodoro", "番茄钟", self._act_pomo),
             ("alarm", "闹钟", self._act_alarm),
-            ("travel", "天气播报", self._act_weather),
             ("shot", "区域截图", self._act_shot),
             ("recorder", "录屏", self._act_record),
+            ("lan", "局域网共享", self._act_lan),
+            ("p2p", "跨网传文件", self._act_p2p),
             ("music", "音乐播放器", self._act_music),
             ("clean", "清理电脑（立即执行）", self._act_clean),
+            ("uninstall", "卸载软件", self._act_uninstall),
             ("settings", "打开主界面", self._act_hub),
         ]
         icon_size = QSize(22, 22)
@@ -400,10 +407,47 @@ class FloatingAssistant(QWidget):
         self.host.show_alarm_board()
         self.menu.hide()
 
-    def _act_weather(self) -> None:
-        self._tip("正在获取天气…")
+    def _act_lan(self) -> None:
+        self._tip("打开局域网共享")
         try:
-            self.host.announce_weather(force=True)
+            self.host.show_hub()
+            win = getattr(self.host, "main_win", None)
+            if win is not None:
+                win.goto_transfer("lan")
+            else:
+                self.host.show_lan_share()
+        except Exception:
+            try:
+                self.host.show_lan_share()
+            except Exception:
+                pass
+        self.menu.hide()
+
+    def _act_p2p(self) -> None:
+        self._tip("打开跨网传文件")
+        try:
+            self.host.show_hub()
+            win = getattr(self.host, "main_win", None)
+            if win is not None:
+                win.goto_transfer("p2p")
+            else:
+                self.host.show_p2p_board()
+        except Exception:
+            try:
+                self.host.show_p2p_board()
+            except Exception:
+                pass
+        self.menu.hide()
+
+    def _act_uninstall(self) -> None:
+        self._tip("打开卸载软件")
+        try:
+            self.host.show_hub()
+            win = getattr(self.host, "main_win", None)
+            if win is not None:
+                win.goto("uninstall")
+            elif hasattr(self.host, "show_uninstaller"):
+                self.host.show_uninstaller()
         except Exception:
             pass
         self.menu.hide()

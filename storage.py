@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 
 def _default_float_assistant() -> bool:
-    # macOS: off by default (logo shouldn't sit permanently on the desktop)
-    return sys.platform != "darwin"
+    # Floating robot is Windows-only; macOS/Linux stay off.
+    return sys.platform.startswith("win")
 
 
 DEFAULT_STATE: dict[str, Any] = {

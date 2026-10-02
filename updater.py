@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Bump when shipping a new installer (keep in sync with VERSION file).
-APP_VERSION = "1.9.5"
+APP_VERSION = "1.9.6"
 
 # Public releases channel (organization repo)
 GITHUB_REPO = "secure-artifacts/DesktopToolkit"
@@ -74,7 +74,7 @@ def _http_json(url: str, *, timeout: float, user_agent: str) -> dict | list:
 def _pick_release_payload(timeout: float, user_agent: str) -> dict:
     """
     Prefer /releases/latest, but also scan recent releases and take the
-    highest non-prerelease tag — avoids stale 'latest' mirrors / flags.
+    highest non-prerelease tag 鈥?avoids stale 'latest' mirrors / flags.
     """
     latest_payload: dict = {}
     try:
@@ -105,7 +105,7 @@ def _pick_release_payload(timeout: float, user_agent: str) -> dict:
         pass
 
     if not best:
-        raise RuntimeError("无法从 GitHub 获取发布信息（网络或接口失败）")
+        raise RuntimeError("鏃犳硶浠?GitHub 鑾峰彇鍙戝竷淇℃伅锛堢綉缁滄垨鎺ュ彛澶辫触锛?)
     return best
 
 
@@ -122,7 +122,7 @@ def _select_asset(payload: dict) -> tuple[str, str, str]:
             continue
         low = name.lower()
         if low.endswith(".sha256"):
-            sha_by_name[name[:-7]] = url  # strip .sha256 → original asset name key
+            sha_by_name[name[:-7]] = url  # strip .sha256 鈫?original asset name key
             sha_by_name[name] = url
             continue
         if is_mac:
@@ -167,7 +167,7 @@ def check_for_update(timeout: float = 8.0) -> UpdateCheckResult:
             current=current,
             latest="",
             has_update=False,
-            message=f"检查更新失败：{exc}",
+            message=f"妫€鏌ユ洿鏂板け璐ワ細{exc}",
             release_url=RELEASES_PAGE,
         )
 
@@ -188,24 +188,24 @@ def check_for_update(timeout: float = 8.0) -> UpdateCheckResult:
             current=current,
             latest="",
             has_update=False,
-            message="未找到发布版本信息。",
+            message="鏈壘鍒板彂甯冪増鏈俊鎭€?,
             release_url=html_url,
         )
 
     has_update = _normalize_version(latest) > _normalize_version(current)
     if has_update:
         msg = (
-            f"发现新版本 {latest}（当前 {current}）。\n"
-            f"推荐下载：{asset_name or '见 GitHub Releases'}"
+            f"鍙戠幇鏂扮増鏈?{latest}锛堝綋鍓?{current}锛夈€俓n"
+            f"鎺ㄨ崘涓嬭浇锛歿asset_name or '瑙?GitHub Releases'}"
         )
         if sha256_expected:
-            msg += "\n已附带 SHA256 校验。"
+            msg += "\n宸查檮甯?SHA256 鏍￠獙銆?
     else:
         msg = (
-            f"已是最新版本。\n"
-            f"当前：{current}\n"
-            f"远程最新：{latest}\n\n"
-            f"若界面仍像旧版，请完全退出后从 GitHub Latest 重新安装。"
+            f"宸叉槸鏈€鏂扮増鏈€俓n"
+            f"褰撳墠锛歿current}\n"
+            f"杩滅▼鏈€鏂帮細{latest}\n\n"
+            f"鑻ョ晫闈粛鍍忔棫鐗堬紝璇峰畬鍏ㄩ€€鍑哄悗浠?GitHub Latest 閲嶆柊瀹夎銆?
         )
     return UpdateCheckResult(
         ok=True,
@@ -258,7 +258,7 @@ def _fetch_sha256_text(url: str, *, timeout: float, user_agent: str) -> str:
     # Formats: "<hex>  filename" or bare "<hex>"
     first = (text.split() or [""])[0].strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", first):
-        raise ValueError(f"无法解析 SHA256 文件内容：{text[:80]!r}")
+        raise ValueError(f"鏃犳硶瑙ｆ瀽 SHA256 鏂囦欢鍐呭锛歿text[:80]!r}")
     return first
 
 
@@ -290,14 +290,14 @@ def download_update(
     sidecar must verify; otherwise the download is deleted and rejected.
     """
     if not url or not str(url).startswith("http"):
-        raise ValueError("没有可下载的安装包地址，请打开下载页手动获取。")
+        raise ValueError("娌℃湁鍙笅杞界殑瀹夎鍖呭湴鍧€锛岃鎵撳紑涓嬭浇椤垫墜鍔ㄨ幏鍙栥€?)
     if not _update_url_allowed(url):
-        raise ValueError("更新地址不在允许的 GitHub 发布域名内，已拒绝下载。")
+        raise ValueError("鏇存柊鍦板潃涓嶅湪鍏佽鐨?GitHub 鍙戝竷鍩熷悕鍐咃紝宸叉嫆缁濅笅杞姐€?)
     low = str(url).lower()
     if "/releases/tag/" in low and not any(
         low.endswith(ext) for ext in (".exe", ".zip", ".7z", ".dmg")
     ):
-        raise ValueError("没有可下载的安装包地址，请打开下载页手动获取。")
+        raise ValueError("娌℃湁鍙笅杞界殑瀹夎鍖呭湴鍧€锛岃鎵撳紑涓嬭浇椤垫墜鍔ㄨ幏鍙栥€?)
     dest_dir = dest_dir or Path(tempfile.gettempdir()) / "DesktopToolkitUpdates"
     dest_dir.mkdir(parents=True, exist_ok=True)
     name = (filename or "").strip() or urllib_parse_unquote_name(url) or "DesktopToolkit-update.bin"
@@ -322,12 +322,12 @@ def download_update(
                     except Exception:
                         pass
     if not dest.is_file() or dest.stat().st_size < 1024:
-        raise RuntimeError("下载文件无效或过小。")
+        raise RuntimeError("涓嬭浇鏂囦欢鏃犳晥鎴栬繃灏忋€?)
 
     expect = (expected_sha256 or "").strip().lower()
     if not expect and sha256_url:
         if not _update_url_allowed(sha256_url):
-            raise RuntimeError("SHA256 校验地址不在允许域名内。")
+            raise RuntimeError("SHA256 鏍￠獙鍦板潃涓嶅湪鍏佽鍩熷悕鍐呫€?)
         expect = _fetch_sha256_text(
             sha256_url, timeout=min(30.0, timeout), user_agent=headers["User-Agent"]
         )
@@ -337,7 +337,7 @@ def download_update(
         except OSError:
             pass
         raise RuntimeError(
-            "发布包缺少 SHA256 校验文件，已拒绝安装。请从 GitHub Releases 页面手动下载。"
+            "鍙戝竷鍖呯己灏?SHA256 鏍￠獙鏂囦欢锛屽凡鎷掔粷瀹夎銆傝浠?GitHub Releases 椤甸潰鎵嬪姩涓嬭浇銆?
         )
     if expect:
         actual = file_sha256(dest)
@@ -347,7 +347,7 @@ def download_update(
             except OSError:
                 pass
             raise RuntimeError(
-                f"SHA256 校验失败（文件可能被篡改或下载不完整）。\n期望 {expect}\n实际 {actual}"
+                f"SHA256 鏍￠獙澶辫触锛堟枃浠跺彲鑳借绡℃敼鎴栦笅杞戒笉瀹屾暣锛夈€俓n鏈熸湜 {expect}\n瀹為檯 {actual}"
             )
     return dest
 
@@ -388,7 +388,7 @@ def _install_mac_zip(zip_path: Path) -> Path:
         # Open Finder so user can drag manually
         subprocess.Popen(["open", str(extract_dir)])
         raise RuntimeError(
-            f"压缩包内未找到 DesktopToolkit.app，已打开文件夹：{extract_dir}"
+            f"鍘嬬缉鍖呭唴鏈壘鍒?DesktopToolkit.app锛屽凡鎵撳紑鏂囦欢澶癸細{extract_dir}"
         )
     targets = [Path("/Applications"), Path.home() / "Applications"]
     last_err: Exception | None = None
@@ -407,7 +407,7 @@ def _install_mac_zip(zip_path: Path) -> Path:
             continue
     subprocess.Popen(["open", str(app.parent)])
     raise RuntimeError(
-        f"无法自动复制到「应用程序」：{last_err}。已打开 .app 所在文件夹，请手动拖入「应用程序」。"
+        f"鏃犳硶鑷姩澶嶅埗鍒般€屽簲鐢ㄧ▼搴忋€嶏細{last_err}銆傚凡鎵撳紑 .app 鎵€鍦ㄦ枃浠跺す锛岃鎵嬪姩鎷栧叆銆屽簲鐢ㄧ▼搴忋€嶃€?
     )
 
 

@@ -87,7 +87,7 @@ class MainWindow(QMainWindow):
         outer.setSpacing(0)
 
         side = QFrame(objectName="sideNav")
-        side.setFixedWidth(168)
+        side.setFixedWidth(188)
         sl = QVBoxLayout(side)
         sl.setContentsMargins(10, 14, 10, 12)
         sl.setSpacing(3)
@@ -100,19 +100,39 @@ class MainWindow(QMainWindow):
         self._nav_btns: dict[str, QPushButton] = {}
         self._nav_group_btns: dict[str, QPushButton] = {}
         self._nav_child_keys: dict[str, list[str]] = {}
+        _nav_icon_size = QSize(18, 18)
 
-        def _top(key: str, label: str) -> None:
-            b = QPushButton(label)
+        def _apply_nav_icon(btn: QPushButton, icon_key: str | None) -> None:
+            if not icon_key:
+                return
+            p = ui_icon(icon_key)
+            if not p:
+                return
+            btn.setIcon(QIcon(str(p)))
+            btn.setIconSize(_nav_icon_size)
+
+        def _top(key: str, label: str, icon_key: str | None = None) -> None:
+            b = QPushButton(f"  {label}")
             b.setObjectName("nav")
             b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            _apply_nav_icon(b, icon_key)
             b.clicked.connect(lambda _=False, k=key: self.goto(k))
             sl.addWidget(b)
             self._nav_btns[key] = b
 
-        def _group(group_key: str, label: str, children: list[tuple[str, str, object]]) -> None:
-            parent = QPushButton(label)
+        def _group(
+            group_key: str,
+            label: str,
+            children: list[tuple[str, str, object, str]],
+            *,
+            icon_key: str | None = None,
+        ) -> None:
+            parent = QPushButton(f"  {label}")
             parent.setObjectName("nav")
             parent.setCheckable(True)
+            parent.setCursor(Qt.CursorShape.PointingHandCursor)
+            _apply_nav_icon(parent, icon_key)
             first_cb = children[0][2]
             parent.clicked.connect(first_cb)
             sl.addWidget(parent)
@@ -124,10 +144,12 @@ class MainWindow(QMainWindow):
             wrap_l.setContentsMargins(12, 0, 0, 4)
             wrap_l.setSpacing(2)
             child_keys: list[str] = []
-            for ckey, clabel, cb in children:
-                b = QPushButton(clabel)
+            for ckey, clabel, cb, cicon in children:
+                b = QPushButton(f"  {clabel}")
                 b.setObjectName("navChild")
                 b.setCheckable(True)
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                _apply_nav_icon(b, cicon)
                 b.clicked.connect(cb)
                 wrap_l.addWidget(b)
                 self._nav_btns[ckey] = b
@@ -146,6 +168,8 @@ class MainWindow(QMainWindow):
                     self.btn_nav_clean = b
                 elif ckey == "organize":
                     self.btn_nav_organize = b
+                elif ckey == "uninstall":
+                    self.btn_nav_uninstall = b
             self._nav_child_keys[group_key] = child_keys
             if group_key == "transfer":
                 self.btn_nav_transfer = parent
@@ -156,33 +180,37 @@ class MainWindow(QMainWindow):
                 self.btn_nav_media = parent
             sl.addWidget(wrap)
 
-        _top("home", "首页")
+        _top("home", "首页", "settings")
         _group(
             "capture",
             "截图与录屏",
             [
-                ("shot", "截图", lambda: self.goto("shot")),
-                ("record", "录屏", lambda: self.goto("record")),
+                ("shot", "截图", lambda: self.goto("shot"), "shot"),
+                ("record", "录屏", lambda: self.goto("record"), "recorder"),
             ],
+            icon_key="shot",
         )
         _group(
             "transfer",
             "文件传输",
             [
-                ("lan", "局域网共享", lambda: self.goto_transfer("lan")),
-                ("p2p", "跨网传文件", lambda: self.goto_transfer("p2p")),
+                ("lan", "局域网共享", lambda: self.goto_transfer("lan"), "lan"),
+                ("p2p", "跨网传文件", lambda: self.goto_transfer("p2p"), "p2p"),
             ],
+            icon_key="lan",
         )
         _group(
             "media",
             "媒体与系统",
             [
-                ("music", "音乐播放器", lambda: self.goto("music")),
-                ("clean", "清理", lambda: self.goto("clean")),
-                ("organize", "文件整理", lambda: self.goto("organize")),
+                ("music", "音乐播放器", lambda: self.goto("music"), "music"),
+                ("clean", "清理", lambda: self.goto("clean"), "clean"),
+                ("organize", "文件整理", lambda: self.goto("organize"), "organize"),
+                ("uninstall", "卸载软件", lambda: self.goto("uninstall"), "uninstall"),
             ],
+            icon_key="music",
         )
-        _top("prefs", "偏好设置")
+        _top("prefs", "偏好设置", "settings")
         sl.addStretch(1)
         try:
             from updater import get_app_version
@@ -206,6 +234,7 @@ class MainWindow(QMainWindow):
             ("transfer", self._page_transfer),
             ("clean", self._page_clean),
             ("organize", self._page_organize),
+            ("uninstall", self._page_uninstall),
             ("prefs", self._page_prefs),
             )
         )
@@ -268,6 +297,7 @@ class MainWindow(QMainWindow):
             "music": "media",
             "clean": "media",
             "organize": "media",
+            "uninstall": "media",
         }
         active_group = group_of.get(active)
         for k, b in self._nav_btns.items():
@@ -363,7 +393,7 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(18, 14, 18, 14)
         lay.setSpacing(2)
         lay.addWidget(QLabel("首页", objectName="pageTitle"))
-        tip = QLabel("第一排效率 · 第二排截图录屏 · 第三排传输 · 第四排媒体清理")
+        tip = QLabel("第一排效率 · 第二排截图录屏 · 第三排传输 · 第四排媒体与系统")
         tip.setObjectName("muted")
         lay.addWidget(tip)
         lay.addWidget(
@@ -403,6 +433,7 @@ class MainWindow(QMainWindow):
                     ("music", "音乐播放器", lambda: self.goto("music")),
                     ("clean", "清理电脑", lambda: self.goto("clean")),
                     ("organize", "文件整理", lambda: self.goto("organize")),
+                    ("uninstall", "卸载软件", lambda: self.goto("uninstall")),
                     ("travel", "天气播报", lambda: self.host.announce_weather(force=True)),
                 ],
             )
@@ -934,6 +965,22 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.host._embed_organize, 1)
         return body
 
+    def _page_uninstall(self) -> QWidget:
+        from app_uninstaller_ui import AppUninstallerPanel
+
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.addWidget(QLabel("卸载软件", objectName="pageTitle"))
+        if not getattr(self.host, "_embed_uninstaller", None):
+            announce = getattr(self.host, "announce", None)
+            self.host._embed_uninstaller = AppUninstallerPanel(
+                embedded=True,
+                on_announce=announce if callable(announce) else None,
+            )
+        lay.addWidget(self.host._embed_uninstaller, 1)
+        return body
+
     def _page_prefs(self) -> QWidget:
         page = QWidget()
         page_lay = QVBoxLayout(page)
@@ -976,21 +1023,34 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.chk_autostart)
 
         try:
-            from float_assistant import default_float_assistant_enabled
+            from float_assistant import (
+                default_float_assistant_enabled,
+                float_assistant_supported,
+            )
 
             float_default = default_float_assistant_enabled()
+            float_ok = float_assistant_supported()
         except Exception:
             float_default = True
+            float_ok = True
         self.chk_float_logo = QCheckBox("显示悬浮机器人助手（可拖动，记住位置）")
-        self.chk_float_logo.setChecked(bool(prefs.get("float_assistant", float_default)))
+        self.chk_float_logo.setChecked(
+            bool(prefs.get("float_assistant", float_default)) if float_ok else False
+        )
         self.chk_float_logo.toggled.connect(self._on_float_logo)
         lay.addWidget(self.chk_float_logo)
-        tip_a = QLabel(
-            "悬停打开快捷菜单；拖到任意位置后会记住。"
-            "会定时保持在其它窗口前面；若仍被盖住，可用托盘「找回悬浮机器人」。"
-            "独占全屏游戏期间系统可能压过置顶。"
-            "macOS 默认关闭，需要时再勾选。"
-        )
+        if float_ok:
+            tip_a = QLabel(
+                "悬停打开快捷菜单；拖到任意位置后会记住。"
+                "会定时保持在其它窗口前面；若仍被盖住，可用托盘「找回悬浮机器人」。"
+                "独占全屏游戏期间系统可能压过置顶。"
+            )
+        else:
+            tip_a = QLabel(
+                "当前系统（macOS / Linux）不显示桌面悬浮机器人，仅保留主窗口与托盘入口。"
+            )
+            self.chk_float_logo.setEnabled(False)
+            self.chk_float_logo.setChecked(False)
         tip_a.setObjectName("muted")
         tip_a.setWordWrap(True)
         lay.addWidget(tip_a)
@@ -1013,95 +1073,6 @@ class MainWindow(QMainWindow):
         self.lbl_prefs_status = QLabel("")
         self.lbl_prefs_status.setObjectName("muted")
         lay.addWidget(self.lbl_prefs_status)
-
-        # ---- Weather broadcast ----
-        wcfg = self.host.store.state.setdefault("weather", {})
-        # Migrate older builds that wrote display labels into location_text and
-        # then broke auto mode on the next announce.
-        try:
-            loc = str(wcfg.get("location_text") or "")
-            mode = str(wcfg.get("location_mode") or "auto").lower()
-            if mode == "auto" and (" · " in loc or "·" in loc):
-                if not wcfg.get("last_place"):
-                    wcfg["last_place"] = loc
-                wcfg["location_text"] = ""
-                self.host.store.save_state()
-        except Exception:
-            pass
-        lay.addWidget(QLabel("天气播报", objectName="section"))
-        tip_w = QLabel(
-            "默认使用 Open-Meteo（欧洲开源气象，整合 ECMWF / DWD / NOAA 等模型，无需密钥）。"
-            "也可选 OpenWeatherMap（需自行填写 API Key）。"
-            "「自动」按公网 IP 定位；若播报失败，请改「手动城市名」填当地城市后点立即播报。"
-        )
-        tip_w.setObjectName("muted")
-        tip_w.setWordWrap(True)
-        lay.addWidget(tip_w)
-        self.chk_weather = QCheckBox("启用天气播报")
-        self.chk_weather.setChecked(bool(wcfg.get("enabled")))
-        lay.addWidget(self.chk_weather)
-        self.chk_weather_boot = QCheckBox("启动后播报一次")
-        self.chk_weather_boot.setChecked(bool(wcfg.get("announce_on_start")))
-        lay.addWidget(self.chk_weather_boot)
-        from PyQt6.QtWidgets import QComboBox, QSpinBox
-
-        row_prov = QHBoxLayout()
-        row_prov.addWidget(QLabel("数据源"))
-        self.cmb_weather_provider = QComboBox()
-        self.cmb_weather_provider.addItem("Open-Meteo（推荐·免密钥）", "open-meteo")
-        self.cmb_weather_provider.addItem("OpenWeatherMap（需 API Key）", "openweathermap")
-        idx_p = self.cmb_weather_provider.findData(str(wcfg.get("provider") or "open-meteo"))
-        self.cmb_weather_provider.setCurrentIndex(max(0, idx_p))
-        row_prov.addWidget(self.cmb_weather_provider, 1)
-        lay.addLayout(row_prov)
-        row_mode = QHBoxLayout()
-        row_mode.addWidget(QLabel("位置"))
-        self.cmb_weather_mode = QComboBox()
-        self.cmb_weather_mode.addItem("自动（按公网 IP 大致定位）", "auto")
-        self.cmb_weather_mode.addItem("手动城市名", "manual")
-        self.cmb_weather_mode.addItem("经纬度", "coords")
-        idx_m = self.cmb_weather_mode.findData(str(wcfg.get("location_mode") or "auto"))
-        self.cmb_weather_mode.setCurrentIndex(max(0, idx_m))
-        row_mode.addWidget(self.cmb_weather_mode, 1)
-        lay.addLayout(row_mode)
-        self.txt_weather_place = QLineEdit(str(wcfg.get("location_text") or ""))
-        self.txt_weather_place.setPlaceholderText("例如：São Paulo / Lisbon / Shanghai / New York")
-        lay.addWidget(self.txt_weather_place)
-        row_ll = QHBoxLayout()
-        self.txt_weather_lat = QLineEdit(str(wcfg.get("latitude") or ""))
-        self.txt_weather_lat.setPlaceholderText("纬度 lat")
-        self.txt_weather_lon = QLineEdit(str(wcfg.get("longitude") or ""))
-        self.txt_weather_lon.setPlaceholderText("经度 lon")
-        row_ll.addWidget(self.txt_weather_lat)
-        row_ll.addWidget(self.txt_weather_lon)
-        lay.addLayout(row_ll)
-        self.txt_owm_key = QLineEdit(str(wcfg.get("owm_api_key") or ""))
-        self.txt_owm_key.setPlaceholderText("OpenWeatherMap API Key（仅选 OWM 时需要）")
-        self.txt_owm_key.setEchoMode(QLineEdit.EchoMode.Password)
-        lay.addWidget(self.txt_owm_key)
-        row_iv = QHBoxLayout()
-        row_iv.addWidget(QLabel("定时播报间隔（分钟，0=仅手动）"))
-        self.spin_weather_iv = QSpinBox()
-        self.spin_weather_iv.setRange(0, 24 * 60)
-        self.spin_weather_iv.setValue(int(wcfg.get("interval_min") or 60))
-        row_iv.addWidget(self.spin_weather_iv)
-        row_iv.addStretch(1)
-        lay.addLayout(row_iv)
-        wrow = QHBoxLayout()
-        btn_w_save = QPushButton("保存天气设置", objectName="primary")
-        btn_w_save.setMinimumHeight(34)
-        btn_w_save.clicked.connect(self._save_weather_settings)
-        btn_w_now = QPushButton("立即播报", objectName="soft")
-        btn_w_now.setMinimumHeight(34)
-        btn_w_now.clicked.connect(self._weather_announce_now)
-        wrow.addWidget(btn_w_save)
-        wrow.addWidget(btn_w_now)
-        wrow.addStretch(1)
-        lay.addLayout(wrow)
-        self.lbl_weather_status = QLabel("")
-        self.lbl_weather_status.setObjectName("muted")
-        self.lbl_weather_status.setWordWrap(True)
-        lay.addWidget(self.lbl_weather_status)
 
         lay.addWidget(QLabel("快捷键", objectName="section"))
         lay.addWidget(
@@ -1153,38 +1124,6 @@ class MainWindow(QMainWindow):
         page_lay.addWidget(scroll, 1)
         self.apply_theme()
         return page
-
-    def _weather_cfg_from_ui(self) -> dict:
-        return {
-            "enabled": bool(self.chk_weather.isChecked()),
-            "announce_on_start": bool(self.chk_weather_boot.isChecked()),
-            "provider": str(self.cmb_weather_provider.currentData() or "open-meteo"),
-            "location_mode": str(self.cmb_weather_mode.currentData() or "auto"),
-            "location_text": self.txt_weather_place.text().strip(),
-            "latitude": self.txt_weather_lat.text().strip(),
-            "longitude": self.txt_weather_lon.text().strip(),
-            "owm_api_key": self.txt_owm_key.text().strip(),
-            "interval_min": int(self.spin_weather_iv.value()),
-        }
-
-    def _save_weather_settings(self) -> None:
-        cfg = self.host.store.state.setdefault("weather", {})
-        cfg.update(self._weather_cfg_from_ui())
-        self.host.store.save_state()
-        try:
-            self.host.reload_weather_scheduler()
-        except Exception:
-            pass
-        self.lbl_weather_status.setText("天气设置已保存")
-        self.lbl_prefs_status.setText("天气设置已保存")
-
-    def _weather_announce_now(self) -> None:
-        self._save_weather_settings()
-        self.lbl_weather_status.setText("正在获取天气…")
-        try:
-            self.host.announce_weather(force=True)
-        except Exception as e:
-            self.lbl_weather_status.setText(f"播报失败：{e}")
 
     def _prefs(self) -> dict:
         return self.host.store.state.setdefault("prefs", {})
