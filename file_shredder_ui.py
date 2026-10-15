@@ -10,6 +10,7 @@ from PyQt6.QtCore import Qt, QObject, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -438,10 +439,160 @@ class FileShredderPanel(QWidget):
             QMessageBox.information(self, "粉碎结束", msg)
 
     def offer_shred(self, paths: list[str | Path]) -> None:
-        """External entry (float drop / CLI): queue paths and prompt."""
+        """Hub-panel entry: queue paths and run the in-page confirm flow."""
         n = self.add_paths(paths)
         if n == 0 and not self._paths():
             QMessageBox.information(self, "粉碎文件", "没有可粉碎的有效路径。")
             return
-        # Auto-start confirm flow
         self._start()
+
+
+class QuickShredDialog(QDialog):
+    """Lightweight confirm + progress window — does not open the main hub."""
+
+    def __init__(
+        self,
+        paths: list[str],
+        *,
+        passes: int,
+        rename: bool,
+        on_announce=None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("粉碎文件")
+        self.setModal(False)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.resize(420, 180)
+        self._paths = list(paths)
+        self._passes = clamp_passes(passes)
+        self._rename = bool(rename)
+        self._on_announce = on_announce
+        self._cancel = False
+        self._bridge = _Bridge()
+        self._bridge.progress.connect(self._on_progress)
+        self._bridge.finished.connect(self._on_finished)
+
+        lay = QVBoxLayout(self)
+        self.lbl = QLabel("准备粉碎…")
+        self.lbl.setWordWrap(True)
+        lay.addWidget(self.lbl)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 1000)
+        self.bar.setValue(0)
+        lay.addWidget(self.bar)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.btn_cancel = QPushButton("取消")
+        self.btn_cancel.clicked.connect(self._request_cancel)
+        row.addWidget(self.btn_cancel)
+        lay.addLayout(row)
+
+    def _request_cancel(self) -> None:
+        self._cancel = True
+        self.lbl.setText("正在取消…")
+        self.btn_cancel.setEnabled(False)
+
+    def _on_progress(self, msg: str, frac: float) -> None:
+        self.lbl.setText(msg)
+        self.bar.setValue(int(max(0.0, min(1.0, frac)) * 1000))
+
+    def start(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+        def worker() -> None:
+            report = shred_many(
+                self._paths,
+                passes=self._passes,
+                rename=self._rename,
+                progress=lambda m, f: self._bridge.progress.emit(m, f),
+                cancel=lambda: self._cancel,
+            )
+            self._bridge.finished.emit(report)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_finished(self, report: object) -> None:
+        self.btn_cancel.setEnabled(False)
+        if not isinstance(report, ShredReport):
+            self.close()
+            return
+        msg = report.summary()
+        if callable(self._on_announce):
+            try:
+                self._on_announce(msg)
+            except Exception:
+                pass
+        self.lbl.setText(msg)
+        self.bar.setValue(1000)
+        if report.fail_count and not report.cancelled:
+            QMessageBox.warning(self, "粉碎结束", msg)
+        else:
+            QMessageBox.information(self, "粉碎结束", msg)
+        self.accept()
+
+
+def quick_shred(
+    paths: list[str | Path],
+    *,
+    state: dict | None = None,
+    on_announce=None,
+    parent=None,
+) -> QuickShredDialog | None:
+    """Confirm and shred without opening the main hub UI.
+
+    Returns the progress dialog (keep a reference) or None if cancelled / empty.
+    """
+    cleaned = [str(p) for p in (paths or []) if str(p).strip()]
+    cleaned = [p for p in cleaned if Path(p).exists()]
+    if not cleaned:
+        QMessageBox.information(parent, "粉碎文件", "没有可粉碎的有效路径。")
+        return None
+
+    cfg = (state or {}).setdefault("shredder", {}) if isinstance(state, dict) else {}
+    passes = clamp_passes(cfg.get("passes", DEFAULT_PASSES) if isinstance(cfg, dict) else DEFAULT_PASSES)
+    rename = bool(cfg.get("rename", True)) if isinstance(cfg, dict) else True
+
+    targets, errs = collect_targets(cleaned)
+    files = [p for p in targets if p.is_file() or p.is_symlink()]
+    nbytes = estimate_bytes(targets)
+    names = [Path(p).name for p in cleaned[:5]]
+    name_line = "、".join(names)
+    if len(cleaned) > 5:
+        name_line += f" 等 {len(cleaned)} 项"
+
+    warn = (
+        f"确定粉碎以下内容？\n"
+        f"· {name_line}\n"
+        f"· 约 {len(files)} 个文件，{_fmt_size(nbytes)}\n"
+        f"· 覆盖 {passes} 次（不进回收站，不可恢复）"
+    )
+    if errs:
+        warn += f"\n· 另有 {len(errs)} 项将跳过"
+
+    # Prefer an application-modal box that does not raise the hub
+    box = QMessageBox(parent)
+    box.setWindowTitle("确认粉碎")
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setText(warn)
+    box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    box.setDefaultButton(QMessageBox.StandardButton.No)
+    box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    # Avoid activating a buried main window as parent
+    if parent is None:
+        box.setWindowModality(Qt.WindowModality.ApplicationModal)
+    ret = box.exec()
+    if ret != QMessageBox.StandardButton.Yes:
+        return None
+
+    dlg = QuickShredDialog(
+        cleaned,
+        passes=passes,
+        rename=rename,
+        on_announce=on_announce,
+        parent=None,  # independent top-level; do not attach to hub
+    )
+    dlg.start()
+    return dlg

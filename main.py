@@ -660,41 +660,23 @@ class ToolkitApp(QObject):
         self.announce("无法打开粉碎文件页面")
 
     def offer_shred(self, paths: list) -> None:
-        """Queue paths for shredding (float drop / CLI / shell verb) with confirm UI."""
+        """Float drop / CLI / shell verb: confirm + shred without opening the hub."""
         cleaned = [str(p) for p in (paths or []) if str(p).strip()]
         if not cleaned:
             return
         try:
-            self.show_hub()
-            if self.main_win is not None:
-                self.main_win.goto("shred")
-                # Ensure page built so embed exists
-                self.main_win._ensure_page("shred")
-            panel = getattr(self, "_embed_shredder", None)
-            if panel is None and self.main_win is not None:
-                # Page builder attaches to host
-                self.main_win.goto("shred")
-                panel = getattr(self, "_embed_shredder", None)
-            if panel is not None:
-                QTimer.singleShot(80, lambda: panel.offer_shred(cleaned))
-                return
-        except Exception:
-            traceback.print_exc()
-        try:
-            from file_shredder_ui import FileShredderPanel
+            from file_shredder_ui import quick_shred
 
-            dlg = FileShredderPanel(
-                embedded=False,
+            # Keep a ref so the progress dialog is not garbage-collected
+            self._quick_shred_dlg = quick_shred(
+                cleaned,
                 state=self.store.state,
-                on_save_state=self.store.save_state,
                 on_announce=self.announce,
+                parent=None,
             )
-            dlg.show()
-            dlg.raise_()
-            QTimer.singleShot(80, lambda: dlg.offer_shred(cleaned))
-            self._floating_shredder = dlg  # keep ref
         except Exception as exc:
-            QMessageBox.warning(None, "粉碎文件", f"无法打开粉碎界面：{exc}")
+            traceback.print_exc()
+            QMessageBox.warning(None, "粉碎文件", f"无法开始粉碎：{exc}")
 
     def show_alarm_board(self) -> None:
         from alarm_ui import FloatingAlarmBoard
