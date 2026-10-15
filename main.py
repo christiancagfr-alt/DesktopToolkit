@@ -217,6 +217,7 @@ class ToolkitApp(QObject):
             ("便签", self.show_notes),
             ("笔记本", self.show_notebook),
             ("文件整理", self.show_file_organizer),
+            ("粉碎文件", self.show_shredder),
             ("卸载软件", self.show_uninstaller),
             ("清理电脑", self.start_deep_clean),
             ("音乐", self.show_music_player),
@@ -647,6 +648,54 @@ class ToolkitApp(QObject):
             pass
         self.announce("无法打开卸载软件页面")
 
+    def show_shredder(self) -> None:
+        """Open the secure file shredder page in the hub."""
+        try:
+            self.show_hub()
+            if self.main_win is not None:
+                self.main_win.goto("shred")
+                return
+        except Exception:
+            pass
+        self.announce("无法打开粉碎文件页面")
+
+    def offer_shred(self, paths: list) -> None:
+        """Queue paths for shredding (float drop / CLI / shell verb) with confirm UI."""
+        cleaned = [str(p) for p in (paths or []) if str(p).strip()]
+        if not cleaned:
+            return
+        try:
+            self.show_hub()
+            if self.main_win is not None:
+                self.main_win.goto("shred")
+                # Ensure page built so embed exists
+                self.main_win._ensure_page("shred")
+            panel = getattr(self, "_embed_shredder", None)
+            if panel is None and self.main_win is not None:
+                # Page builder attaches to host
+                self.main_win.goto("shred")
+                panel = getattr(self, "_embed_shredder", None)
+            if panel is not None:
+                QTimer.singleShot(80, lambda: panel.offer_shred(cleaned))
+                return
+        except Exception:
+            traceback.print_exc()
+        try:
+            from file_shredder_ui import FileShredderPanel
+
+            dlg = FileShredderPanel(
+                embedded=False,
+                state=self.store.state,
+                on_save_state=self.store.save_state,
+                on_announce=self.announce,
+            )
+            dlg.show()
+            dlg.raise_()
+            QTimer.singleShot(80, lambda: dlg.offer_shred(cleaned))
+            self._floating_shredder = dlg  # keep ref
+        except Exception as exc:
+            QMessageBox.warning(None, "粉碎文件", f"无法打开粉碎界面：{exc}")
+
     def show_alarm_board(self) -> None:
         from alarm_ui import FloatingAlarmBoard
 
@@ -724,13 +773,56 @@ class ToolkitApp(QObject):
         self.app.quit()
 
 
+def _parse_cli_shred_paths(argv: list[str]) -> list[str]:
+    """Extract paths after --shred (supports multiple files from shell verbs)."""
+    paths: list[str] = []
+    if "--shred" not in argv:
+        return paths
+    i = argv.index("--shred") + 1
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("-"):
+            break
+        paths.append(a)
+        i += 1
+    return paths
+
+
+def _ipc_payload(argv: list[str]) -> bytes:
+    """Message for the running instance: raise, or shred + paths."""
+    paths = _parse_cli_shred_paths(argv)
+    if paths:
+        # One path per line after header (UTF-8)
+        body = "SHRED\n" + "\n".join(paths)
+        return body.encode("utf-8", errors="surrogateescape")
+    return b"RAISE"
+
+
+def _handle_ipc_message(host: ToolkitApp, raw: bytes) -> None:
+    text = (raw or b"").decode("utf-8", errors="surrogateescape").strip()
+    if text.upper().startswith("SHRED"):
+        lines = text.splitlines()
+        paths = [ln.strip() for ln in lines[1:] if ln.strip()]
+        if paths:
+            try:
+                host.offer_shred(paths)
+                return
+            except Exception:
+                traceback.print_exc()
+    try:
+        host.show_hub()
+    except Exception:
+        pass
+
+
 def main() -> int:
     _install_exception_hooks()
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setStyle("Fusion")
     app.setApplicationName("Desktop Toolkit")
-    # Single-instance: a second launch just activates the first
+    shred_paths = _parse_cli_shred_paths(sys.argv)
+    # Single-instance: second launch activates first (and can forward --shred paths)
     try:
         from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
@@ -738,8 +830,9 @@ def main() -> int:
         probe = QLocalSocket()
         probe.connectToServer(key)
         if probe.waitForConnected(200):
-            probe.write(b"raise")
-            probe.waitForBytesWritten(500)
+            payload = _ipc_payload(sys.argv)
+            probe.write(payload)
+            probe.waitForBytesWritten(800)
             probe.disconnectFromServer()
             return 0
         try:
@@ -760,19 +853,21 @@ def main() -> int:
         if server is not None:
 
             def _on_second_instance() -> None:
+                raw = b""
                 try:
                     sock = server.nextPendingConnection()
                     if sock:
-                        sock.readAll()
+                        sock.waitForReadyRead(800)
+                        raw = bytes(sock.readAll())
                         sock.disconnectFromServer()
                 except Exception:
                     pass
-                try:
-                    host.show_hub()
-                except Exception:
-                    pass
+                _handle_ipc_message(host, raw)
 
             server.newConnection.connect(_on_second_instance)
+        if shred_paths:
+            # First instance started via shell verb — open shredder after UI is up
+            QTimer.singleShot(600, lambda: host.offer_shred(shred_paths))
     except Exception as exc:
         traceback.print_exc()
         QMessageBox.critical(None, "Desktop Toolkit", f"启动失败：{exc}")

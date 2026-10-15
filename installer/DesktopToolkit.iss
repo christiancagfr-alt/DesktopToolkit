@@ -2,7 +2,7 @@
 ; Builds a double-click Setup.exe from dist\DesktopToolkit\
 
 #define MyAppName "Desktop Toolkit"
-#define MyAppVersion "1.9.11"
+#define MyAppVersion "1.9.12"
 #define MyAppPublisher "Desktop Toolkit"
 #define MyAppURL "https://github.com/christiancagfr-alt/DesktopToolkit"
 #define MyAppExeName "DesktopToolkit.exe"
@@ -46,6 +46,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
 Name: "autostart"; Description: "Start with Windows"; GroupDescription: "Startup:"; Flags: unchecked
+Name: "shredmenu"; Description: "Add Explorer right-click: Shred with Desktop Toolkit"; GroupDescription: "Shell integration:"; Flags: checkedonce
 
 [Files]
 ; Full onedir PyInstaller tree
@@ -61,6 +62,31 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
   ValueType: string; ValueName: "DesktopToolkit"; ValueData: """{app}\{#MyAppExeName}"""; \
   Flags: uninsdeletevalue; Tasks: autostart
+; Explorer context menu — shred files (per-user, no admin)
+Root: HKCU; Subkey: "Software\Classes\*\shell\DesktopToolkitShred"; \
+  ValueType: string; ValueName: ""; ValueData: "用 Desktop Toolkit 粉碎"; \
+  Flags: uninsdeletekey; Tasks: shredmenu
+Root: HKCU; Subkey: "Software\Classes\*\shell\DesktopToolkitShred"; \
+  ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName}"; \
+  Tasks: shredmenu
+Root: HKCU; Subkey: "Software\Classes\*\shell\DesktopToolkitShred"; \
+  ValueType: string; ValueName: "Position"; ValueData: "Top"; \
+  Tasks: shredmenu
+Root: HKCU; Subkey: "Software\Classes\*\shell\DesktopToolkitShred\command"; \
+  ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --shred ""%1"""; \
+  Tasks: shredmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\DesktopToolkitShred"; \
+  ValueType: string; ValueName: ""; ValueData: "用 Desktop Toolkit 粉碎"; \
+  Flags: uninsdeletekey; Tasks: shredmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\DesktopToolkitShred"; \
+  ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName}"; \
+  Tasks: shredmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\DesktopToolkitShred"; \
+  ValueType: string; ValueName: "Position"; ValueData: "Top"; \
+  Tasks: shredmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\DesktopToolkitShred\command"; \
+  ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" --shred ""%1"""; \
+  Tasks: shredmenu
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent

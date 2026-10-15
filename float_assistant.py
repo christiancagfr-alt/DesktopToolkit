@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import QPoint, Qt, QTimer, QSize
-from PyQt6.QtGui import QCursor, QGuiApplication, QIcon, QMouseEvent, QPixmap
+from PyQt6.QtGui import QCursor, QDragEnterEvent, QDropEvent, QGuiApplication, QIcon, QMouseEvent, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -79,7 +79,8 @@ class FloatingAssistant(QWidget):
         except Exception:
             pass
         self.setFixedSize(78, 78)
-        self.setToolTip("拖动移动 · 单击打开/关闭菜单 · 双击打开主界面")
+        self.setAcceptDrops(True)
+        self.setToolTip("拖动移动 · 单击菜单 · 双击主界面 · 拖入文件可粉碎")
 
         # Pure transparent — no circle, no white plate
         self.icon_lbl = QLabel(self)
@@ -159,6 +160,7 @@ class FloatingAssistant(QWidget):
             ("p2p", "跨网传文件", self._act_p2p),
             ("music", "音乐播放器", self._act_music),
             ("clean", "清理电脑（立即执行）", self._act_clean),
+            ("shred", "粉碎文件", self._act_shred),
             ("uninstall", "卸载软件", self._act_uninstall),
             ("settings", "打开主界面", self._act_hub),
         ]
@@ -373,6 +375,33 @@ class FloatingAssistant(QWidget):
         self._act_hub()
         e.accept()
 
+    def dragEnterEvent(self, e: QDragEnterEvent) -> None:  # noqa: N802
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+            self.setToolTip("松开鼠标即可粉碎（不进回收站）")
+        else:
+            super().dragEnterEvent(e)
+
+    def dragLeaveEvent(self, e) -> None:  # noqa: N802
+        self.setToolTip("拖动移动 · 单击菜单 · 双击主界面 · 拖入文件可粉碎")
+        super().dragLeaveEvent(e)
+
+    def dropEvent(self, e: QDropEvent) -> None:  # noqa: N802
+        self.setToolTip("拖动移动 · 单击菜单 · 双击主界面 · 拖入文件可粉碎")
+        paths = []
+        for url in e.mimeData().urls():
+            if url.isLocalFile():
+                paths.append(url.toLocalFile())
+        if paths:
+            e.acceptProposedAction()
+            self._hide_menu()
+            try:
+                self.host.offer_shred(paths)
+            except Exception as exc:
+                self._tip(f"粉碎失败：{exc}")
+            return
+        super().dropEvent(e)
+
     # --- actions ---
     def _tip(self, msg: str) -> None:
         try:
@@ -499,6 +528,14 @@ class FloatingAssistant(QWidget):
         self._tip("开始清理电脑")
         # 直接执行，不进设置页
         self.host.start_deep_clean()
+        self.menu.hide()
+
+    def _act_shred(self) -> None:
+        self._tip("打开粉碎文件")
+        try:
+            self.host.show_shredder()
+        except Exception:
+            pass
         self.menu.hide()
 
     def _act_hub(self) -> None:

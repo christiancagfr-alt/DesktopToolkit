@@ -168,6 +168,8 @@ class MainWindow(QMainWindow):
                     self.btn_nav_clean = b
                 elif ckey == "organize":
                     self.btn_nav_organize = b
+                elif ckey == "shred":
+                    self.btn_nav_shred = b
                 elif ckey == "uninstall":
                     self.btn_nav_uninstall = b
             self._nav_child_keys[group_key] = child_keys
@@ -206,6 +208,7 @@ class MainWindow(QMainWindow):
                 ("music", "音乐播放器", lambda: self.goto("music"), "music"),
                 ("clean", "清理", lambda: self.goto("clean"), "clean"),
                 ("organize", "文件整理", lambda: self.goto("organize"), "organize"),
+                ("shred", "粉碎文件", lambda: self.goto("shred"), "shred"),
                 ("uninstall", "卸载软件", lambda: self.goto("uninstall"), "uninstall"),
             ],
             icon_key="music",
@@ -234,6 +237,7 @@ class MainWindow(QMainWindow):
             ("transfer", self._page_transfer),
             ("clean", self._page_clean),
             ("organize", self._page_organize),
+            ("shred", self._page_shred),
             ("uninstall", self._page_uninstall),
             ("prefs", self._page_prefs),
             )
@@ -297,6 +301,7 @@ class MainWindow(QMainWindow):
             "music": "media",
             "clean": "media",
             "organize": "media",
+            "shred": "media",
             "uninstall": "media",
         }
         active_group = group_of.get(active)
@@ -433,6 +438,7 @@ class MainWindow(QMainWindow):
                     ("music", "音乐播放器", lambda: self.goto("music")),
                     ("clean", "清理电脑", lambda: self.goto("clean")),
                     ("organize", "文件整理", lambda: self.goto("organize")),
+                    ("shred", "粉碎文件", lambda: self.goto("shred")),
                     ("uninstall", "卸载软件", lambda: self.goto("uninstall")),
                     ("travel", "天气播报", lambda: self.host.announce_weather(force=True)),
                 ],
@@ -963,6 +969,24 @@ class MainWindow(QMainWindow):
         if not getattr(self.host, "_embed_organize", None):
             self.host._embed_organize = FileOrganizerWindow(embedded=True)
         lay.addWidget(self.host._embed_organize, 1)
+        return body
+
+    def _page_shred(self) -> QWidget:
+        from file_shredder_ui import FileShredderPanel
+
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.addWidget(QLabel("粉碎文件", objectName="pageTitle"))
+        if not getattr(self.host, "_embed_shredder", None):
+            announce = getattr(self.host, "announce", None)
+            self.host._embed_shredder = FileShredderPanel(
+                embedded=True,
+                state=self.host.store.state,
+                on_save_state=self.host.store.save_state,
+                on_announce=announce if callable(announce) else None,
+            )
+        lay.addWidget(self.host._embed_shredder, 1)
         return body
 
     def _page_uninstall(self) -> QWidget:
