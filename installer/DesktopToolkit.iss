@@ -93,11 +93,11 @@ Root: HKCU; Subkey: "Software\Classes\Directory\shell\DesktopToolkitShred\comman
 
 [Run]
 ; Install VC++ runtime when MSVCP140.dll is missing (fixes "找不到 MSVCP140.dll")
-; Verb:runas triggers UAC so it works even with PrivilegesRequired=lowest
+; Verb:runas needs shellexec (Inno requirement); triggers UAC under PrivilegesRequired=lowest
 Filename: "{tmp}\vc_redist.x64.exe"; \
   Parameters: "/install /passive /norestart"; \
   StatusMsg: "Installing Visual C++ runtime (MSVCP140.dll)..."; \
-  Flags: waituntilterminated; \
+  Flags: shellexec waituntilterminated; \
   Check: NeedsVCRedist; \
   Verb: runas
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
