@@ -161,7 +161,10 @@ jobs:
 
   build-macos:
     needs: resolve
-    runs-on: macos-14
+    # Prefer latest macOS image (better runner availability than pinned macos-14)
+    runs-on: macos-latest
+    # Do not block the whole release if macOS runners are unavailable/cancelled
+    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -284,6 +287,15 @@ jobs:
 
   release:
     needs: [resolve, build-windows, build-macos, build-linux]
+    # Publish whatever platforms succeeded (macOS may be skipped when runners unavailable)
+    if: |
+      always() &&
+      needs.resolve.result == 'success' &&
+      (
+        needs.build-windows.result == 'success' ||
+        needs.build-linux.result == 'success' ||
+        needs.build-macos.result == 'success'
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Checkout notes
@@ -295,9 +307,19 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+        continue-on-error: true
 
       - name: List assets
-        run: ls -la artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          ls -la artifacts || true
+          count=$(find artifacts -type f | wc -l | tr -d ' ')
+          echo "asset file count=$count"
+          if [ "$count" -lt 1 ]; then
+            echo "No build artifacts to publish"
+            exit 1
+          fi
 
       - name: Create / update GitHub Release
         # softprops/action-gh-release@v2.2.1
@@ -308,4 +330,4 @@ jobs:
           body_path: installer/RELEASE_NOTES_v${{ needs.resolve.outputs.version }}.md
           files: artifacts/*
           make_latest: true
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
