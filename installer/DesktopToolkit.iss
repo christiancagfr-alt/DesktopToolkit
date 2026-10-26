@@ -2,7 +2,7 @@
 ; Builds a double-click Setup.exe from dist\DesktopToolkit\
 
 #define MyAppName "Desktop Toolkit"
-#define MyAppVersion "1.9.13"
+#define MyAppVersion "1.9.14"
 #define MyAppPublisher "Desktop Toolkit"
 #define MyAppURL "https://github.com/christiancagfr-alt/DesktopToolkit"
 #define MyAppExeName "DesktopToolkit.exe"
@@ -51,6 +51,9 @@ Name: "shredmenu"; Description: "Add Explorer right-click: Shred with Desktop To
 [Files]
 ; Full onedir PyInstaller tree
 Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Microsoft Visual C++ 2015-2022 x64 redistributable (provides MSVCP140.dll)
+; Downloaded by CI into installer\ before ISCC; required at compile time.
+Source: "vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -89,6 +92,24 @@ Root: HKCU; Subkey: "Software\Classes\Directory\shell\DesktopToolkitShred\comman
   Tasks: shredmenu
 
 [Run]
+; Install VC++ runtime when MSVCP140.dll is missing (fixes "找不到 MSVCP140.dll")
+; Verb:runas triggers UAC so it works even with PrivilegesRequired=lowest
+Filename: "{tmp}\vc_redist.x64.exe"; \
+  Parameters: "/install /passive /norestart"; \
+  StatusMsg: "Installing Visual C++ runtime (MSVCP140.dll)..."; \
+  Flags: waituntilterminated; \
+  Check: NeedsVCRedist; \
+  Verb: runas
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
 
+[Code]
+function NeedsVCRedist: Boolean;
+begin
+  { System32 on 64-bit install when ArchitecturesInstallIn64BitMode is set }
+  Result := not FileExists(ExpandConstant('{sys}\MSVCP140.dll'));
+  if Result then
+    Log('MSVCP140.dll missing — will run vc_redist.x64.exe')
+  else
+    Log('MSVCP140.dll present — skip VC redist');
+end;
 

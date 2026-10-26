@@ -12,6 +12,7 @@ build/
 dist/
 release-assets/
 *.spec.bak
+installer/vc_redist.x64.exe
 
 # Local state / secrets
 state.json

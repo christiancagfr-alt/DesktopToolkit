@@ -100,11 +100,45 @@ jobs:
             throw "Inno Setup ISCC.exe not found after install"
           }
 
+      - name: Download VC++ redistributable (MSVCP140)
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD "installer\vc_redist.x64.exe"
+          $url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          if (-not (Test-Path $out)) { throw "vc_redist.x64.exe download failed" }
+          $len = (Get-Item $out).Length
+          if ($len -lt 1000000) { throw "vc_redist.x64.exe too small: $len bytes" }
+          Write-Host "Saved $out ($len bytes)"
+          # Also ship beside portable zip for machines that skip the Setup
+          $releaseDir = Join-Path $PWD "release-assets"
+          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+          Copy-Item $out (Join-Path $releaseDir "vc_redist.x64.exe") -Force
+          $bat = Join-Path $releaseDir "install-VC-redist-fix-MSVCP140.bat"
+          $batLines = @(
+            '@echo off',
+            'echo Installing Microsoft Visual C++ 2015-2022 x64 runtime...',
+            'echo Fixes: MSVCP140.dll was not found / DesktopToolkit cannot start.',
+            '"%~dp0vc_redist.x64.exe" /install /passive /norestart',
+            'if errorlevel 1 (',
+            '  echo Install failed. Try running vc_redist.x64.exe as Administrator.',
+            '  pause',
+            '  exit /b 1',
+            ')',
+            'echo Done. You can start DesktopToolkit.exe now.',
+            'pause'
+          )
+          Set-Content -Path $bat -Value $batLines -Encoding ASCII
+
       - name: Build Windows Setup installer
         shell: pwsh
         run: |
           $version = "${{ needs.resolve.outputs.version }}"
           $iss = Join-Path $PWD "installer\DesktopToolkit.iss"
+          if (-not (Test-Path (Join-Path $PWD "installer\vc_redist.x64.exe"))) {
+            throw "installer\vc_redist.x64.exe missing — download step failed"
+          }
           (Get-Content $iss -Raw) -replace '#define MyAppVersion "[\d.]+"', "#define MyAppVersion `"$version`"" |
             Set-Content $iss -Encoding UTF8
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" $iss
