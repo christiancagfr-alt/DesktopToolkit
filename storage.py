@@ -158,12 +158,11 @@ class JsonStore:
         with _WRITE_LOCK:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.state_path.with_suffix(".tmp")
-            try:
-                from secret_store import protect_state
+            # Always run protect_state — it fail-closes secret fields (empty) rather
+            # than persisting plaintext if DPAPI/Fernet is unavailable.
+            from secret_store import protect_state
 
-                payload = protect_state(self.state)
-            except Exception:
-                payload = self.state
+            payload = protect_state(self.state)
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(self.state_path)
 

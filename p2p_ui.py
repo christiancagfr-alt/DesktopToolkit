@@ -252,8 +252,8 @@ class FloatingP2PBoard(QWidget):
         room_row = QHBoxLayout()
         room_row.addWidget(QLabel("房间"))
         self.txt_room = QLineEdit()
-        self.txt_room.setPlaceholderText("6 位房间码")
-        self.txt_room.setMaxLength(8)
+        self.txt_room.setPlaceholderText("8 位房间码")
+        self.txt_room.setMaxLength(16)
         btn_gen = QPushButton("生成", objectName="soft")
         btn_gen.clicked.connect(self._gen_room)
         room_row.addWidget(self.txt_room, 1)
@@ -550,7 +550,7 @@ class FloatingP2PBoard(QWidget):
         self._save()
 
     def _gen_room(self) -> None:
-        self.txt_room.setText(make_room_code(6))
+        self.txt_room.setText(make_room_code())  # default length 8
 
     def _pick_dest(self) -> None:
         p = QFileDialog.getExistingDirectory(self, "接收保存目录", self.txt_dest.text())

@@ -301,6 +301,8 @@ def run_uninstall(
     if log:
         log(f"执行：{' '.join(argv)}")
 
+    # Never use shell=True — UninstallString comes from the registry and must not
+    # be reinterpreted by cmd.exe (command-injection risk if a key is tampered).
     try:
         proc = subprocess.Popen(
             argv,
@@ -308,10 +310,9 @@ def run_uninstall(
             shell=False,
         )
     except OSError as exc:
-        # Some uninstall strings need shell (rare). Last resort without elevating blindly.
-        if log:
-            log(f"直接启动失败（{exc}），改用 shell 再试…")
-        proc = subprocess.Popen(raw, shell=True)
+        raise RuntimeError(
+            f"无法启动卸载程序（已拒绝 shell 回退）：{exc}\n命令：{' '.join(argv)}"
+        ) from exc
 
     if timeout_sec is None:
         return int(proc.wait())

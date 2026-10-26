@@ -109,12 +109,13 @@ class GoogleDriveClient:
         path = self.token_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         raw = json.dumps(token, ensure_ascii=False, indent=2)
-        try:
-            from secret_store import protect
+        from secret_store import ProtectError, protect
 
+        try:
             raw = protect(raw)
-        except Exception:
-            pass
+        except ProtectError as exc:
+            # Fail closed: never write an OAuth token in plaintext
+            raise RuntimeError(f"无法加密保存 Google Drive 令牌：{exc}") from exc
         path.write_text(raw, encoding="utf-8")
 
     def clear_token(self) -> None:

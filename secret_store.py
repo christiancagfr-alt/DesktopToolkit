@@ -14,6 +14,10 @@ from pathlib import Path
 _PREFIX = "enc:v1:"
 
 
+class ProtectError(RuntimeError):
+    """Raised when a secret cannot be encrypted for disk."""
+
+
 def _fernet_key_path() -> Path:
     # Inline path (avoid circular import with storage.py)
     configured = os.environ.get("DESKTOP_TOOLKIT_DATA_DIR", "")
@@ -47,7 +51,11 @@ def _fernet():
 
 
 def protect(plaintext: str) -> str:
-    """Return an opaque token safe to store in JSON, or empty string."""
+    """Return an opaque token safe to store in JSON, or empty string.
+
+    Raises ProtectError instead of returning plaintext when encryption fails
+    (fail-closed — callers must not persist the original secret).
+    """
     text = plaintext or ""
     if not text:
         return ""
@@ -62,9 +70,10 @@ def protect(plaintext: str) -> str:
             return _PREFIX + "dpapi:" + base64.b64encode(blob).decode("ascii")
         token = _fernet().encrypt(raw)
         return _PREFIX + "fernet:" + token.decode("ascii")
-    except Exception:
-        # Fail closed for new writes only if caller checks; keep best-effort
-        return text
+    except ProtectError:
+        raise
+    except Exception as exc:
+        raise ProtectError(f"无法加密凭据落盘：{exc}") from exc
 
 
 def unprotect(value: str) -> str:
@@ -119,7 +128,11 @@ def protect_state(state: dict) -> dict:
         if isinstance(node, dict):
             for k, v in list(node.items()):
                 if isinstance(v, str) and _looks_secret_key(str(k)):
-                    node[k] = protect(v)
+                    try:
+                        node[k] = protect(v)
+                    except ProtectError:
+                        # Fail closed: never write the plaintext secret to disk
+                        node[k] = ""
                 else:
                     walk(v)
         elif isinstance(node, list):

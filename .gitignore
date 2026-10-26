@@ -21,6 +21,10 @@ client_secrets*.json
 token*.json
 credentials*.json
 
+# Security audit reports stay local (do not publish to GitHub)
+SECURITY_AUDIT.md
+SECURITY_AUDIT*.md
+
 # IDE / OS
 .idea/
 .vscode/
