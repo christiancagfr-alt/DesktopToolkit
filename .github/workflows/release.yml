@@ -78,6 +78,30 @@ jobs:
             throw "Build failed: dist\DesktopToolkit\DesktopToolkit.exe missing"
           }
 
+      - name: Stage MSVC runtime DLLs next to exe
+        shell: pwsh
+        run: |
+          # Windows loads MSVCP140.dll from the app directory / _internal before System32.
+          # PyQt ships copies under PyQt6\Qt6\bin, which is NOT on that search path — so
+          # machines without the VC++ redistributable still fail with "找不到 MSVCP140.dll".
+          $root = Join-Path $PWD "dist\DesktopToolkit"
+          $internal = Join-Path $root "_internal"
+          $qtBin = Join-Path $internal "PyQt6\Qt6\bin"
+          $names = @("MSVCP140.dll", "MSVCP140_1.dll", "MSVCP140_2.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "CONCRT140.dll")
+          foreach ($name in $names) {
+            $src = Join-Path $qtBin $name
+            if (-not (Test-Path $src)) {
+              $sys = Join-Path $env:SystemRoot "System32\$name"
+              if (Test-Path $sys) { $src = $sys } else { Write-Host "skip missing $name"; continue }
+            }
+            Copy-Item $src (Join-Path $root $name) -Force
+            Copy-Item $src (Join-Path $internal $name) -Force
+            Write-Host "staged $name from $src"
+          }
+          if (-not (Test-Path (Join-Path $root "MSVCP140.dll"))) {
+            throw "Failed to stage MSVCP140.dll next to DesktopToolkit.exe"
+          }
+
       - name: Package portable zip
         shell: pwsh
         run: |
