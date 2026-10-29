@@ -82,6 +82,11 @@ def _done_proof(key: bytes, transfer_id: str, digest: str, size: int) -> str:
     return hmac.new(key, payload, hashlib.sha256).hexdigest()
 
 
+def _control_proof(key: bytes, transfer_id: str, action: str) -> str:
+    payload = f"control\n{transfer_id}\n{action}".encode("utf-8")
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
 def make_room_code(n: int = 8) -> str:
     """Generate a room code. Default length 8 (~40 bits) to reduce guessing on public Workers."""
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -426,11 +431,21 @@ class P2PSession:
                         offer_sent = True
                         self.on_status("已发现接收方，已发送文件信息，等待确认…")
                     elif t == "accept":
-                        peer_ready = True
-                        break
+                        proof = str(data.get("proof") or "").lower()
+                        if secrets.compare_digest(
+                            proof, _control_proof(key, transfer_id, "accept")
+                        ):
+                            peer_ready = True
+                            break
+                        self.on_status("忽略了未通过端到端认证的接收确认")
                     elif t == "reject":
-                        self.on_status("对方拒绝接收")
-                        return
+                        proof = str(data.get("proof") or "").lower()
+                        if secrets.compare_digest(
+                            proof, _control_proof(key, transfer_id, "reject")
+                        ):
+                            self.on_status("对方拒绝接收")
+                            return
+                        self.on_status("忽略了未通过端到端认证的拒绝消息")
                     elif t == "hello" and data.get("role") == "send":
                         self.on_status("房间里已有另一个发送方，请换一个房间号")
                         return
@@ -590,7 +605,14 @@ class P2PSession:
                     ws.send(json.dumps({"type": "reject"}))
                     return
                 self.on_status(f"对方要发送：{name} ({size} 字节)，开始接收…")
-                ws.send(json.dumps({"type": "accept"}))
+                ws.send(
+                    json.dumps(
+                        {
+                            "type": "accept",
+                            "proof": _control_proof(key, transfer_id, "accept"),
+                        }
+                    )
+                )
 
                 out_path = dest_dir / name
                 # avoid overwrite

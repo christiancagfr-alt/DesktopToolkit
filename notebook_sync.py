@@ -147,8 +147,12 @@ class NotebookSync:
                 local_nbs[bid] = nb
         updated = 0
         for rn in remote_notes:
-            rid = rn.get("id")
+            rid = str(rn.get("id") or "")
             if not rid:
+                continue
+            try:
+                rid = self.store.validate_object_id(rid, "云端笔记 ID")
+            except ValueError:
                 continue
             ln = local_notes.get(rid)
             remote_body_path = remote_root / "notes" / f"{rid}.json"

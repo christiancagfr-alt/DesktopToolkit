@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Bump when shipping a new installer (keep in sync with VERSION file).
-APP_VERSION = "1.9.17"
+APP_VERSION = "1.9.18"
 
 # Public releases channel (personal account — matches where we publish builds)
 GITHUB_REPO = "christiancagfr-alt/DesktopToolkit"
@@ -321,10 +321,32 @@ def _update_url_allowed(url: str) -> bool:
         return False
 
 
+class _RestrictedUpdateRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects that leave the approved GitHub release hosts."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _update_url_allowed(newurl):
+            raise urllib.error.HTTPError(
+                newurl, code, "更新下载被重定向到未授权域名", headers, fp
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_allowed_update_request(req: urllib.request.Request, *, timeout: float):
+    if not _update_url_allowed(req.full_url):
+        raise ValueError("更新地址不在允许的 GitHub 发布域名内")
+    opener = urllib.request.build_opener(_RestrictedUpdateRedirectHandler())
+    response = opener.open(req, timeout=timeout)
+    if not _update_url_allowed(response.geturl()):
+        response.close()
+        raise RuntimeError("更新下载最终地址不在允许域名内")
+    return response
+
+
 def _fetch_sha256_text(url: str, *, timeout: float, user_agent: str) -> str:
     """Download a .sha256 sidecar and return the hex digest (64 chars)."""
     req = urllib.request.Request(url, headers={"User-Agent": user_agent, "Accept": "text/plain,*/*"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _open_allowed_update_request(req, timeout=timeout) as resp:
         text = resp.read().decode("utf-8", errors="replace").strip()
     # Formats: "<hex>  filename" or bare "<hex>"
     first = (text.split() or [""])[0].strip().lower()
@@ -376,7 +398,7 @@ def download_update(
     dest = dest_dir / name
     headers = {"User-Agent": f"DesktopToolkit/{get_app_version()}"}
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _open_allowed_update_request(req, timeout=timeout) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
         chunk = 256 * 1024
@@ -488,6 +510,8 @@ def launch_installer(path: Path) -> None:
     if not path.is_file():
         raise FileNotFoundError(str(path))
     if sys.platform == "win32":
+        if path.suffix.lower() != ".exe" or not path.name.lower().startswith("desktoptoolkit-"):
+            raise RuntimeError("拒绝执行名称或类型异常的 Windows 更新包")
         subprocess.Popen(
             [str(path)],
             cwd=str(path.parent),
@@ -497,6 +521,8 @@ def launch_installer(path: Path) -> None:
         )
     elif sys.platform == "darwin":
         low = path.name.lower()
+        if not low.startswith("desktoptoolkit-") or not low.endswith((".dmg", ".zip")):
+            raise RuntimeError("拒绝打开名称或类型异常的 macOS 更新包")
         if low.endswith(".dmg"):
             # Same UX as RustDesk: open DMG, user drags app into Applications
             subprocess.Popen(["open", str(path)], cwd=str(path.parent))

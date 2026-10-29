@@ -156,7 +156,29 @@ class NotebookStore:
                 pass
 
     def _note_body_path(self, note_id: str) -> Path:
+        note_id = self.validate_object_id(note_id, "笔记 ID")
         return self.notes_dir / f"{note_id}.json"
+
+    @staticmethod
+    def validate_object_id(value: str, label: str = "ID") -> str:
+        """Return a safe application object ID or reject cloud-controlled paths."""
+        text = str(value or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", text):
+            raise ValueError(f"{label} 格式无效")
+        return text
+
+    def _contained_path(self, base: Path, relative: str) -> Path:
+        """Resolve an untrusted relative path and keep it below *base*."""
+        base = base.resolve()
+        raw = str(relative or "").replace("\\", "/")
+        if not raw or raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+            raise ValueError("附件路径无效")
+        target = (base / Path(*raw.split("/"))).resolve()
+        try:
+            target.relative_to(base)
+        except ValueError as exc:
+            raise ValueError("附件路径越过笔记目录") from exc
+        return target
 
     def _write_note_body(self, note_id: str, body: dict[str, Any]) -> None:
         with _LOCK:
@@ -569,10 +591,18 @@ class NotebookStore:
             except Exception:
                 pass
     def attachment_path(self, note_id: str, att: dict) -> Path:
+        note_id = self.validate_object_id(note_id, "笔记 ID")
         rel = str(att.get("rel") or "").replace("\\", "/")
         if rel:
-            return self.root / Path(*rel.split("/"))
-        return self.attach_dir / note_id / f"{att.get('id')}_{_safe_name(str(att.get('name') or 'file'))}"
+            target = self._contained_path(self.root, rel)
+            allowed = (self.attach_dir / note_id).resolve()
+            try:
+                target.relative_to(allowed)
+            except ValueError as exc:
+                raise ValueError("附件路径不属于当前笔记") from exc
+            return target
+        att_id = self.validate_object_id(str(att.get("id") or ""), "附件 ID")
+        return self.attach_dir / note_id / f"{att_id}_{_safe_name(str(att.get('name') or 'file'))}"
     def remove_attachment(self, note_id: str, att_id: str) -> str:
         idx = self._read_index()
         for n in idx.get("notes") or []:

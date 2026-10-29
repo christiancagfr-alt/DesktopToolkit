@@ -533,8 +533,8 @@ class LanShareServer:
             if not folder.is_dir():
                 return "分享目录不存在，请先选择有效文件夹。"
             pwd = (password or "").strip()
-            if len(pwd) < 8:
-                return "请设置至少 8 位访问密码。"
+            if len(pwd) < 16:
+                return "请设置至少 16 位访问密码；建议使用界面生成的随机密码。"
             try:
                 port = int(port)
             except (TypeError, ValueError):

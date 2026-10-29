@@ -467,9 +467,14 @@ def run_selective_clean(scopes: list[str] | set[str] | None = None) -> CleanRepo
             tmp = Path("/tmp")
             if tmp.exists():
                 try:
+                    current_uid = os.getuid() if hasattr(os, "getuid") else None
                     for child in tmp.iterdir():
-                        # only user-owned temp-ish files, skip sockets
-                        if child.is_file() and child.name.startswith(("tmp", "NSTemporary", "com.")):
+                        # Only delete this user's ordinary temp files. /tmp is shared.
+                        try:
+                            owned = current_uid is not None and child.lstat().st_uid == current_uid
+                        except OSError:
+                            owned = False
+                        if owned and child.is_file() and child.name.startswith(("tmp", "NSTemporary", "com.")):
                             _remove_path(child, report)
                 except OSError:
                     pass

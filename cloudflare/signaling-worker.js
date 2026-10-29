@@ -18,6 +18,10 @@
  */
 
 const FREE_DAILY_LIMIT = 100000;
+const MIN_ROOM_LENGTH = 8;
+const MAX_MESSAGE_BYTES = 1024 * 1024;
+const RATE_WINDOW_MS = 10000;
+const MAX_MESSAGES_PER_WINDOW = 2000;
 
 export default {
   async fetch(request, env, ctx) {
@@ -77,8 +81,8 @@ export default {
       ctx.waitUntil(bumpDayCounter());
       const room = (url.searchParams.get("room") || "").trim().toUpperCase();
       // Alphanumeric room codes only — reject path/injection-like values
-      if (!room || room.length < 4 || room.length > 32 || !/^[A-Z0-9]+$/.test(room)) {
-        return new Response("room required (?room=ABCD, 4-32 A-Z0-9)", { status: 400 });
+      if (!room || room.length < MIN_ROOM_LENGTH || room.length > 32 || !/^[A-Z0-9]+$/.test(room)) {
+        return new Response("room required (8-32 A-Z0-9)", { status: 400 });
       }
       if (request.headers.get("Upgrade") !== "websocket") {
         return new Response("expected websocket", { status: 426 });
@@ -152,6 +156,24 @@ async function bumpDayCounter() {
 
 /** In-isolate room map — only works if both peers hit the same isolate. */
 const EPHEMERAL = new Map();
+const EPHEMERAL_RATE = new WeakMap();
+
+function messageSize(message) {
+  if (typeof message === "string") return new TextEncoder().encode(message).byteLength;
+  if (message instanceof ArrayBuffer) return message.byteLength;
+  if (ArrayBuffer.isView(message)) return message.byteLength;
+  return MAX_MESSAGE_BYTES + 1;
+}
+
+function rateAllowed(state) {
+  const now = Date.now();
+  if (!state.started || now - state.started >= RATE_WINDOW_MS) {
+    state.started = now;
+    state.count = 0;
+  }
+  state.count += 1;
+  return state.count <= MAX_MESSAGES_PER_WINDOW;
+}
 
 function handleEphemeralRoom(request, room) {
   const pair = new WebSocketPair();
@@ -165,8 +187,15 @@ function handleEphemeralRoom(request, room) {
     return new Response(null, { status: 101, webSocket: client });
   }
   peers.add(server);
+  EPHEMERAL_RATE.set(server, { started: Date.now(), count: 0 });
 
   server.addEventListener("message", (event) => {
+    const rate = EPHEMERAL_RATE.get(server) || { started: Date.now(), count: 0 };
+    EPHEMERAL_RATE.set(server, rate);
+    if (messageSize(event.data) > MAX_MESSAGE_BYTES || !rateAllowed(rate)) {
+      try { server.close(1008, "message policy exceeded"); } catch (_) {}
+      return;
+    }
     for (const p of peers) {
       if (p !== server && p.readyState === 1) {
         try {
@@ -211,6 +240,12 @@ export class Room {
   }
 
   async webSocketMessage(ws, message) {
+    let rate = ws.deserializeAttachment() || { started: Date.now(), count: 0 };
+    if (messageSize(message) > MAX_MESSAGE_BYTES || !rateAllowed(rate)) {
+      try { ws.close(1008, "message policy exceeded"); } catch (_) {}
+      return;
+    }
+    ws.serializeAttachment(rate);
     const peers = this.state.getWebSockets();
     for (const p of peers) {
       if (p === ws) continue;

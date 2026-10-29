@@ -13,11 +13,14 @@ from pathlib import Path
 
 import gdrive_client
 import notebook_ui
+import updater
+from notebook_store import NotebookStore
 from lan_share import LanShareClient, LanShareServer
 from p2p_transfer import (
     P2PSession,
     _chunk_aad,
     _derive_transfer_key,
+    _control_proof,
     _done_proof,
     _offer_aad,
 )
@@ -50,7 +53,7 @@ class SecurityRegressionTests(unittest.TestCase):
 
     def test_weak_lan_passwords_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            self.assertIn("至少 8 位", LanShareServer().start(raw, "short"))
+            self.assertIn("至少 16 位", LanShareServer().start(raw, "short-password"))
 
     def test_lan_share_is_https_and_password_authenticated(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -123,6 +126,24 @@ class SecurityRegressionTests(unittest.TestCase):
             _done_proof(key, transfer_id, digest, 5),
             _done_proof(key, transfer_id, digest, 5),
         )
+        self.assertNotEqual(
+            _control_proof(key, transfer_id, "accept"),
+            _control_proof(key, transfer_id, "reject"),
+        )
+
+    def test_notebook_cloud_paths_cannot_escape_note_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = NotebookStore(root=Path(raw) / "notebook")
+            with self.assertRaisesRegex(ValueError, "ID"):
+                store._note_body_path("../escape")
+            with self.assertRaisesRegex(ValueError, "附件路径"):
+                store.attachment_path(
+                    "n_safe", {"id": "a_safe", "rel": "../../victim.txt"}
+                )
+            with self.assertRaisesRegex(ValueError, "当前笔记"):
+                store.attachment_path(
+                    "n_safe", {"id": "a_safe", "rel": "notes/other.json"}
+                )
 
     def test_p2p_encryption_key_is_protected_at_rest(self) -> None:
         self.assertTrue(_looks_secret_key("p2p_encryption_key"))
@@ -216,6 +237,16 @@ class SecurityRegressionTests(unittest.TestCase):
             loaded = gdrive_client.load_client_secrets(path)
         self.assertEqual(loaded["auth_uri"], gdrive_client.AUTH_URL)
         self.assertEqual(loaded["token_uri"], gdrive_client.TOKEN_URL)
+
+    def test_updater_rejects_untrusted_redirect_targets(self) -> None:
+        handler = updater._RestrictedUpdateRedirectHandler()
+        req = __import__("urllib.request").request.Request(
+            "https://github.com/christiancagfr-alt/DesktopToolkit/releases/download/v1/test.exe"
+        )
+        with self.assertRaisesRegex(Exception, "未授权域名"):
+            handler.redirect_request(
+                req, None, 302, "Found", {}, "https://attacker.invalid/update.exe"
+            )
 
 
 if __name__ == "__main__":

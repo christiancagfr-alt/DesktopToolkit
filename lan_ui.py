@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import secrets
 from datetime import datetime
 from pathlib import Path
 
@@ -226,11 +227,16 @@ class FloatingLanBoard(QWidget):
         row2.setSpacing(6)
         row2.addWidget(QLabel("密码"))
         self.txt_pwd = QLineEdit()
-        self.txt_pwd.setPlaceholderText("至少 8 位访问密码")
+        self.txt_pwd.setPlaceholderText("至少 16 位访问密码")
         self.txt_pwd.setEchoMode(QLineEdit.EchoMode.Password)
         self.txt_pwd.setMaximumWidth(140)
         self.txt_pwd.setMaximumHeight(28)
         row2.addWidget(self.txt_pwd)
+        self.btn_gen_password = QPushButton("生成", objectName="soft")
+        self.btn_gen_password.setFixedHeight(28)
+        self.btn_gen_password.setToolTip("生成高强度随机访问密码")
+        self.btn_gen_password.clicked.connect(self._generate_host_password)
+        row2.addWidget(self.btn_gen_password)
         row2.addWidget(QLabel("端口"))
         self.spin_port = QSpinBox()
         self.spin_port.setRange(1024, 65535)
@@ -396,6 +402,14 @@ class FloatingLanBoard(QWidget):
         cfg["client_password"] = self.txt_client_pwd.text()
         cfg["download_dir"] = getattr(self, "_download_dir", str(Path.home() / "Downloads"))
         self._save_state()
+
+    def _generate_host_password(self) -> None:
+        password = secrets.token_urlsafe(24)
+        self.txt_pwd.setText(password)
+        self.txt_client_pwd.setText(password)
+        QGuiApplication.clipboard().setText(password)
+        self._persist_fields()
+        self._append_log("已生成并复制高强度访问密码，请通过可信渠道发给对方。")
 
     def _profiles(self) -> list[dict]:
         raw = self._cfg().get("profiles")
