@@ -9,11 +9,13 @@ upload/download for large 自媒体 editing assets).
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import mimetypes
 import os
 import secrets
 import socket
+import sys
 import threading
 import urllib.error
 import urllib.parse
@@ -22,9 +24,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from transport_security import (
+    EphemeralTlsIdentity,
+    authenticated_client_context,
+    create_ephemeral_tls_identity,
+    derive_channel_key,
+    fetch_tls_fingerprint,
+    make_request_auth,
+    verify_request_auth,
+)
+
 
 DEFAULT_PORT = 8765
 CHUNK_SIZE = 1024 * 256  # 256 KiB — good for large media files
+FIREWALL_RULE_PREFIX = "Desktop Toolkit LAN Share"
+
+def _direct_https_opener() -> urllib.request.OpenerDirector:
+    """Bypass proxies; TLS identity is authenticated by the request HMAC."""
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=authenticated_client_context()),
+    )
 
 
 def local_ipv4_addresses() -> list[str]:
@@ -45,13 +65,41 @@ def local_ipv4_addresses() -> list[str]:
         sock.connect(("8.8.8.8", 80))
         ip = sock.getsockname()[0]
         sock.close()
-        if ip and not ip.startswith("127.") and ip not in found:
+        if ip and not ip.startswith("127."):
+            if ip in found:
+                found.remove(ip)
             found.insert(0, ip)
     except OSError:
         pass
     if not found:
         found.append("127.0.0.1")
     return found
+
+
+def request_windows_firewall_access(port: int = DEFAULT_PORT) -> str:
+    """Ask Windows (via UAC) to allow this LAN port from the local subnet."""
+    if sys.platform != "win32":
+        return "当前系统不需要 Windows 防火墙规则。"
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = DEFAULT_PORT
+    if not (1024 <= port <= 65535):
+        return "端口请使用 1024–65535。"
+    rule_name = f"{FIREWALL_RULE_PREFIX} {port}"
+    params = (
+        f'advfirewall firewall add rule name="{rule_name}" dir=in action=allow '
+        f"protocol=TCP localport={port} remoteip=LocalSubnet profile=any enable=yes"
+    )
+    try:
+        import ctypes
+
+        result = int(ctypes.windll.shell32.ShellExecuteW(None, "runas", "netsh.exe", params, None, 0))
+    except Exception as exc:
+        return f"无法启动防火墙修复：{exc}"
+    if result <= 32:
+        return "防火墙修复未执行（可能取消了管理员授权）。"
+    return f"已请求放行 TCP {port}；请在管理员提示中选择“是”，然后重新连接。"
 
 
 # PBKDF2 iterations — CodeQL requires a slow KDF for password hashing (not raw SHA-256).
@@ -131,10 +179,9 @@ def _query_path(qs: dict[str, list[str]]) -> str:
 class _ShareHandler(BaseHTTPRequestHandler):
     # Set by LanShareServer before serving
     share_root: Path = Path(".")
-    # Password is stored only as PBKDF2 salt+digest (never plaintext on the handler).
-    password_salt: str = ""
-    password_digest: str = ""
-    token: str = ""
+    auth_key: bytes = b""
+    tls_fingerprint: str = ""
+    seen_nonces: dict[str, float] = {}
     log_callback: Callable[[str], None] | None = None
     # Auth brute-force guard: client IP -> list of failure timestamps
     _auth_failures: dict[str, list[float]] = {}
@@ -190,29 +237,20 @@ class _ShareHandler(BaseHTTPRequestHandler):
         with _ShareHandler._auth_lock:
             _ShareHandler._auth_failures.pop(ip, None)
 
-    def _credential_ok(self, provided: str) -> bool:
-        if not provided:
-            return False
-        # Session token is high-entropy random — constant-time compare is enough.
-        if self.token and secrets.compare_digest(provided, self.token):
-            return True
-        if self.password_salt and self.password_digest:
-            return verify_password(provided, self.password_salt, self.password_digest)
-        return False
-
     def _auth_ok(self) -> bool:
-        # Accept Authorization: Bearer <token|password> or X-Share-Password / X-Share-Token
-        auth = self.headers.get("Authorization") or ""
-        if auth.lower().startswith("bearer "):
-            if self._credential_ok(auth[7:].strip()):
-                self._auth_ok_reset()
-                return True
-        for header in ("X-Share-Token", "X-Share-Password"):
-            if self._credential_ok((self.headers.get(header) or "").strip()):
-                self._auth_ok_reset()
-                return True
-        # Do not accept ?token= / ?password= — credentials in the URL land in
-        # proxy/server access logs and browser history.
+        auth = self.headers.get("X-Toolkit-Auth") or ""
+        with _ShareHandler._auth_lock:
+            ok = verify_request_auth(
+                auth,
+                self.auth_key,
+                self.tls_fingerprint,
+                self.command,
+                self.path,
+                self.seen_nonces,
+            )
+        if ok:
+            self._auth_ok_reset()
+            return True
         self._auth_fail()
         return False
 
@@ -231,7 +269,6 @@ class _ShareHandler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -239,10 +276,10 @@ class _ShareHandler(BaseHTTPRequestHandler):
         self._send_json(code, {"ok": False, "error": message})
 
     def do_OPTIONS(self) -> None:  # type: ignore[override]
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Share-Password, X-Share-Token")
+        # This native client doesn't need cross-origin browser access. Refusing
+        # CORS prevents an arbitrary website from driving the LAN file API.
+        self.send_response(405)
+        self.send_header("Allow", "GET, POST")
         self.end_headers()
 
     def do_GET(self) -> None:  # type: ignore[override]
@@ -345,7 +382,6 @@ class _ShareHandler(BaseHTTPRequestHandler):
                 "Content-Disposition",
                 f"attachment; filename*=UTF-8''{filename}",
             )
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             try:
                 with target.open("rb") as handle:
@@ -476,6 +512,7 @@ class LanShareServer:
         self.port: int = DEFAULT_PORT
         self.password: str = ""
         self.token: str = ""
+        self._tls_identity: EphemeralTlsIdentity | None = None
         self._lock = threading.Lock()
 
     @property
@@ -496,8 +533,8 @@ class LanShareServer:
             if not folder.is_dir():
                 return "分享目录不存在，请先选择有效文件夹。"
             pwd = (password or "").strip()
-            if len(pwd) < 4:
-                return "请设置至少 4 位访问密码。"
+            if len(pwd) < 8:
+                return "请设置至少 8 位访问密码。"
             try:
                 port = int(port)
             except (TypeError, ValueError):
@@ -505,29 +542,35 @@ class LanShareServer:
             if not (1024 <= port <= 65535):
                 return "端口请使用 1024–65535。"
 
-            token = secrets.token_urlsafe(16)
-            pwd_salt, pwd_digest = hash_password(pwd)
+            try:
+                identity = create_ephemeral_tls_identity("Desktop Toolkit LAN Share")
+                auth_key = derive_channel_key(pwd, identity.fingerprint, "lan-share-v1")
+            except Exception as exc:
+                return f"无法初始化加密连接：{exc}"
             handler = type(
                 "BoundShareHandler",
                 (_ShareHandler,),
                 {
                     "share_root": folder.resolve(),
-                    "password_salt": pwd_salt,
-                    "password_digest": pwd_digest,
-                    "token": token,
+                    "auth_key": auth_key,
+                    "tls_fingerprint": identity.fingerprint,
+                    "seen_nonces": {},
                     "log_callback": staticmethod(log_callback) if log_callback else None,
                 },
             )
             try:
                 server = ThreadingHTTPServer(("0.0.0.0", port), handler)
+                server.socket = identity.context.wrap_socket(server.socket, server_side=True)
             except OSError as exc:
+                identity.cleanup()
                 return f"无法绑定端口 {port}：{exc}"
 
             self._server = server
             self.root = folder.resolve()
             self.port = port
             self.password = pwd
-            self.token = token
+            self.token = ""
+            self._tls_identity = identity
 
             def _run() -> None:
                 try:
@@ -539,8 +582,8 @@ class LanShareServer:
             self._thread.start()
 
             ips = local_ipv4_addresses()
-            tip = " / ".join(f"{ip}:{port}" for ip in ips[:3])
-            return f"已开启局域网分享：{tip}（密码保护）"
+            tip = f"{ips[0]}:{port}" if ips else f"127.0.0.1:{port}"
+            return f"已开启 HTTPS 加密局域网分享：{tip}（密码认证）"
 
     def stop(self) -> str:
         with self._lock:
@@ -558,6 +601,10 @@ class LanShareServer:
             self._thread = None
             self.root = None
             self.token = ""
+            identity = self._tls_identity
+            self._tls_identity = None
+            if identity:
+                identity.cleanup()
             return "已停止局域网分享。"
 
     def status_text(self) -> str:
@@ -565,15 +612,18 @@ class LanShareServer:
             return "未开启"
         ips = local_ipv4_addresses()
         root_name = self.root.name if self.root else "?"
-        return f"运行中 · {root_name} · 端口 {self.port} · {', '.join(ips[:3])}"
+        primary = ips[0] if ips else "127.0.0.1"
+        return f"HTTPS 加密运行中 · {root_name} · {primary}:{self.port}"
 
 
 class LanShareClient:
-    """Simple HTTP client for connecting to another pet's share server."""
+    """Authenticated HTTPS client for another Desktop Toolkit share server."""
 
     def __init__(self) -> None:
         self.base_url = ""
         self.password = ""
+        self._auth_key = b""
+        self._tls_fingerprint = ""
         self.connected_name = ""
         self.remote_root_name = ""
 
@@ -584,6 +634,8 @@ class LanShareClient:
     def disconnect(self) -> None:
         self.base_url = ""
         self.password = ""
+        self._auth_key = b""
+        self._tls_fingerprint = ""
         self.connected_name = ""
         self.remote_root_name = ""
 
@@ -593,7 +645,7 @@ class LanShareClient:
         try:
             from urllib.parse import urlparse
 
-            candidate = raw if "://" in raw else f"http://{raw}"
+            candidate = raw if "://" in raw else f"https://{raw}"
             parsed = urlparse(candidate)
             host = (parsed.hostname or "").strip(".")
             if parsed.port and not port:
@@ -609,9 +661,18 @@ class LanShareClient:
             port = int(port)
         except (TypeError, ValueError):
             port = DEFAULT_PORT
-        base = f"http://{host}:{port}"
+        base = f"https://{host}:{port}"
         try:
-            data = self._request_json(base, "/api/ping", password=pwd, timeout=timeout)
+            fingerprint = fetch_tls_fingerprint(host, port, timeout)
+            auth_key = derive_channel_key(pwd, fingerprint, "lan-share-v1")
+            data = self._request_json(
+                base,
+                "/api/ping",
+                password=pwd,
+                timeout=timeout,
+                auth_key=auth_key,
+                fingerprint=fingerprint,
+            )
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
                 return "连接失败：密码错误或未授权。"
@@ -623,7 +684,9 @@ class LanShareClient:
         if not data.get("ok"):
             return f"连接失败：{data.get('error') or '未知错误'}"
         self.base_url = base
-        self.password = pwd
+        self.password = ""
+        self._auth_key = auth_key
+        self._tls_fingerprint = fingerprint
         self.connected_name = str(data.get("name") or host)
         self.remote_root_name = str(data.get("root_name") or "共享")
         return f"已连接 {self.connected_name}（共享：{self.remote_root_name}）"
@@ -660,53 +723,49 @@ class LanShareClient:
         # Encode full path (including /) so proxies never mis-parse query
         query = urllib.parse.urlencode({"path": rel})
         url = f"{self.base_url}/api/download?{query}"
-        headers = {"Authorization": f"Bearer {self.password}"}
+        target = f"/api/download?{query}"
+        headers = {
+            "X-Toolkit-Auth": make_request_auth(
+                self._auth_key, self._tls_fingerprint, "GET", target
+            )
+        }
         dest = Path(dest_file)
         existing = dest.stat().st_size if resume and dest.exists() else 0
         if existing > 0:
             headers["Range"] = f"bytes={existing}-"
         try:
-            try:
-                import requests
-
-                with requests.get(url, headers=headers, stream=True, timeout=120) as resp:
-                    if resp.status_code not in (200, 206):
-                        detail = self._http_error_detail(resp.status_code, resp.content, rel)
-                        return detail
-                    total = existing
-                    cl = resp.headers.get("Content-Length")
-                    if cl and str(cl).isdigit():
-                        total = existing + int(cl) if resp.status_code == 206 else int(cl)
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    mode = "ab" if resp.status_code == 206 and existing else "wb"
-                    if mode == "wb":
-                        existing = 0
-                    written = existing if mode == "ab" else 0
-                    with dest.open(mode) as handle:
-                        for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
-                            if not chunk:
-                                continue
-                            handle.write(chunk)
-                            written += len(chunk)
-                            if progress:
-                                progress(written, total)
-            except ImportError:
-                req = urllib.request.Request(url, method="GET")
-                for k, v in headers.items():
-                    req.add_header(k, v)
-                with urllib.request.urlopen(req, timeout=120) as resp:
-                    total = int(resp.headers.get("Content-Length") or 0)
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    written = 0
-                    with dest.open("wb") as handle:
-                        while True:
-                            chunk = resp.read(CHUNK_SIZE)
-                            if not chunk:
-                                break
-                            handle.write(chunk)
-                            written += len(chunk)
-                            if progress:
-                                progress(written, total)
+            parsed = urllib.parse.urlsplit(url)
+            conn = http.client.HTTPSConnection(
+                parsed.hostname,
+                parsed.port or 443,
+                timeout=120,
+                context=authenticated_client_context(),
+            )
+            conn.request("GET", target, headers=headers)
+            resp = conn.getresponse()
+            if resp.status not in (200, 206):
+                body = resp.read(64 * 1024)
+                conn.close()
+                return self._http_error_detail(resp.status, body, rel)
+            total = existing
+            cl = resp.getheader("Content-Length")
+            if cl and str(cl).isdigit():
+                total = existing + int(cl) if resp.status == 206 else int(cl)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            mode = "ab" if resp.status == 206 and existing else "wb"
+            if mode == "wb":
+                existing = 0
+            written = existing if mode == "ab" else 0
+            with dest.open(mode) as handle:
+                while True:
+                    chunk = resp.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    written += len(chunk)
+                    if progress:
+                        progress(written, total)
+            conn.close()
         except urllib.error.HTTPError as exc:
             try:
                 body = exc.read()
@@ -902,43 +961,50 @@ class LanShareClient:
             f"path={urllib.parse.quote(rel)}&name={urllib.parse.quote(src.name)}"
         )
         headers = {
-            "Authorization": f"Bearer {self.password}",
+            "X-Toolkit-Auth": make_request_auth(
+                self._auth_key,
+                self._tls_fingerprint,
+                "POST",
+                urllib.parse.urlsplit(url).path + "?" + urllib.parse.urlsplit(url).query,
+            ),
             "Content-Type": "application/octet-stream",
             "X-Filename": src.name,
+            "Content-Length": str(size),
         }
         try:
-            try:
-                import requests
-
-                # Pass a seekable file handle so requests sets Content-Length
-                # (chunked encoding is not supported by our simple host server).
-                with src.open("rb") as handle:
-                    resp = requests.post(
-                        url,
-                        data=handle,
-                        headers={**headers, "Content-Length": str(size)},
-                        timeout=600,
-                    )
-                if progress:
-                    progress(size, size)
-                if resp.status_code != 200:
-                    try:
-                        payload = resp.json()
-                        return str(payload.get("error") or f"HTTP {resp.status_code}")
-                    except Exception:
-                        return f"上传失败：HTTP {resp.status_code}"
-                data = resp.json() if resp.content else {}
-            except ImportError:
-                body = src.read_bytes()
-                req = urllib.request.Request(url, data=body, method="POST")
-                for key, value in headers.items():
-                    req.add_header(key, value)
-                req.add_header("Content-Length", str(size))
-                with urllib.request.urlopen(req, timeout=600) as resp:
-                    raw = resp.read().decode("utf-8", errors="replace")
-                    data = json.loads(raw) if raw else {}
-                if progress:
-                    progress(size, size)
+            parsed = urllib.parse.urlsplit(url)
+            target = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+            conn = http.client.HTTPSConnection(
+                parsed.hostname,
+                parsed.port or 443,
+                timeout=600,
+                context=authenticated_client_context(),
+            )
+            conn.putrequest("POST", target)
+            for key, value in headers.items():
+                conn.putheader(key, value)
+            conn.endheaders()
+            sent = 0
+            with src.open("rb") as handle:
+                while True:
+                    chunk = handle.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    conn.send(chunk)
+                    sent += len(chunk)
+                    if progress:
+                        progress(sent, size)
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8", errors="replace")
+            if resp.status != 200:
+                conn.close()
+                try:
+                    payload = json.loads(raw) if raw else {}
+                    return str(payload.get("error") or f"HTTP {resp.status}")
+                except Exception:
+                    return f"上传失败：HTTP {resp.status}"
+            data = json.loads(raw) if raw else {}
+            conn.close()
         except urllib.error.HTTPError as exc:
             try:
                 body = exc.read().decode("utf-8", errors="replace")
@@ -969,8 +1035,8 @@ class LanShareClient:
             return str(data.get("error") or "创建失败")
         return "已创建文件夹"
 
-    @staticmethod
     def _request_json(
+        self,
         base: str,
         api_path: str,
         *,
@@ -978,6 +1044,8 @@ class LanShareClient:
         params: dict[str, str] | None = None,
         method: str = "GET",
         timeout: float = 30.0,
+        auth_key: bytes | None = None,
+        fingerprint: str = "",
     ) -> dict[str, Any]:
         query = urllib.parse.urlencode(params or {})
         url = f"{base}{api_path}"
@@ -985,11 +1053,19 @@ class LanShareClient:
             url = f"{url}?{query}"
         data = b"" if method.upper() == "POST" else None
         req = urllib.request.Request(url, data=data, method=method.upper())
-        req.add_header("Authorization", f"Bearer {password}")
+        target = urllib.parse.urlsplit(url).path
+        if urllib.parse.urlsplit(url).query:
+            target += "?" + urllib.parse.urlsplit(url).query
+        use_key = auth_key if auth_key is not None else self._auth_key
+        use_fp = fingerprint or self._tls_fingerprint
+        req.add_header(
+            "X-Toolkit-Auth",
+            make_request_auth(use_key, use_fp, method, target),
+        )
         if method.upper() == "POST":
             req.add_header("Content-Length", "0")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _direct_https_opener().open(req, timeout=timeout) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
             return json.loads(body) if body else {}
         except urllib.error.HTTPError as exc:

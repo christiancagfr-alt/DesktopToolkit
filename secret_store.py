@@ -106,6 +106,7 @@ _SECRET_KEYS = frozenset(
         "cf_api_token",
         "host_password",
         "client_password",
+        "p2p_encryption_key",
         "password",
     }
 )

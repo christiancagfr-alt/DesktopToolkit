@@ -8,6 +8,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QObject
 from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -23,7 +24,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from p2p_transfer import P2PSession, make_room_code
+from p2p_transfer import P2PSession, make_room_code, make_transfer_secret
 
 
 class _Bridge(QObject):
@@ -139,7 +140,7 @@ class FloatingP2PBoard(QWidget):
         lay.setContentsMargins(8 if self.embedded else 14, 4, 10 if self.embedded else 14, 10)
         lay.setSpacing(6)
 
-        tip = QLabel("Cloudflare 只牵线/转发，不存文件。双方同一握手链接 + 同一房间号即可。")
+        tip = QLabel("Cloudflare 只转发密文、不存文件。双方需使用相同房间号和端到端加密密钥。")
         tip.setObjectName("muted")
         tip.setWordWrap(True)
         lay.addWidget(tip)
@@ -260,6 +261,20 @@ class FloatingP2PBoard(QWidget):
         room_row.addWidget(btn_gen)
         lay.addLayout(room_row)
 
+        key_row = QHBoxLayout()
+        key_row.addWidget(QLabel("加密密钥"))
+        self.txt_e2ee_key = QLineEdit()
+        self.txt_e2ee_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.txt_e2ee_key.setPlaceholderText("双方相同，至少 12 位；不会发送给 Cloudflare")
+        btn_key_gen = QPushButton("生成", objectName="soft")
+        btn_key_gen.clicked.connect(self._gen_key)
+        btn_key_copy = QPushButton("复制", objectName="soft")
+        btn_key_copy.clicked.connect(self._copy_key)
+        key_row.addWidget(self.txt_e2ee_key, 1)
+        key_row.addWidget(btn_key_gen)
+        key_row.addWidget(btn_key_copy)
+        lay.addLayout(key_row)
+
         path_row = QHBoxLayout()
         path_row.addWidget(QLabel("接收"))
         self.txt_dest = QLineEdit()
@@ -327,6 +342,10 @@ class FloatingP2PBoard(QWidget):
             self.txt_room.setText(str(cfg["room"]))
         else:
             self._gen_room()
+        if cfg.get("p2p_encryption_key"):
+            self.txt_e2ee_key.setText(str(cfg["p2p_encryption_key"]))
+        elif not self.txt_e2ee_key.text():
+            self._gen_key()
         if hasattr(self, "txt_cf_token"):
             self.txt_cf_token.setText(str(cfg.get("cf_api_token") or ""))
             self.txt_cf_account.setText(str(cfg.get("cf_account_id") or ""))
@@ -336,6 +355,7 @@ class FloatingP2PBoard(QWidget):
         cfg["signal_url"] = self.txt_url.text().strip()
         cfg["dest_dir"] = self.txt_dest.text().strip()
         cfg["room"] = self.txt_room.text().strip().upper()
+        cfg["p2p_encryption_key"] = self.txt_e2ee_key.text().strip()
         if hasattr(self, "txt_cf_token"):
             cfg["cf_api_token"] = self.txt_cf_token.text().strip()
             cfg["cf_account_id"] = self.txt_cf_account.text().strip()
@@ -551,6 +571,19 @@ class FloatingP2PBoard(QWidget):
 
     def _gen_room(self) -> None:
         self.txt_room.setText(make_room_code())  # default length 8
+        if hasattr(self, "txt_e2ee_key") and not self.txt_e2ee_key.text().strip():
+            self._gen_key()
+
+    def _gen_key(self) -> None:
+        self.txt_e2ee_key.setText(make_transfer_secret())
+
+    def _copy_key(self) -> None:
+        key = self.txt_e2ee_key.text().strip()
+        if not key:
+            self._gen_key()
+            key = self.txt_e2ee_key.text().strip()
+        QApplication.clipboard().setText(key)
+        self.lbl_status.setText("已复制端到端加密密钥，请通过可信渠道发给对方")
 
     def _pick_dest(self) -> None:
         p = QFileDialog.getExistingDirectory(self, "接收保存目录", self.txt_dest.text())
@@ -691,15 +724,20 @@ class FloatingP2PBoard(QWidget):
         self._save()
         url = self.txt_url.text().strip()
         room = self.txt_room.text().strip()
+        encryption_secret = self.txt_e2ee_key.text().strip()
         if not url:
             self.lbl_status.setText("请先填写 Cloudflare Worker 地址")
             return None
         if len(room) < 4:
             self.lbl_status.setText("房间号至少 4 位")
             return None
+        if len(encryption_secret) < 12:
+            self.lbl_status.setText("端到端加密密钥至少 12 位")
+            return None
         return P2PSession(
             url,
             room,
+            encryption_secret,
             on_status=lambda m: self._bridge.status.emit(m),
             on_progress=lambda a, b, c: self._bridge.progress.emit(a, b, c),
         )

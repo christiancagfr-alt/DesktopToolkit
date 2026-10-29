@@ -47,8 +47,10 @@ def load_client_secrets(path: str | Path) -> dict[str, str]:
     return {
         "client_id": str(client_id),
         "client_secret": str(client_secret),
-        "auth_uri": str(block.get("auth_uri") or AUTH_URL),
-        "token_uri": str(block.get("token_uri") or TOKEN_URL),
+        # Never trust endpoints supplied by an imported JSON file: otherwise a
+        # modified file could exfiltrate the client secret and refresh token.
+        "auth_uri": AUTH_URL,
+        "token_uri": TOKEN_URL,
     }
 
 

@@ -160,6 +160,10 @@ function handleEphemeralRoom(request, room) {
 
   if (!EPHEMERAL.has(room)) EPHEMERAL.set(room, new Set());
   const peers = EPHEMERAL.get(room);
+  if (peers.size >= 2) {
+    try { server.close(1008, "room full"); } catch (_) {}
+    return new Response(null, { status: 101, webSocket: client });
+  }
   peers.add(server);
 
   server.addEventListener("message", (event) => {
@@ -195,6 +199,9 @@ export class Room {
   async fetch(request) {
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response("expected websocket", { status: 426 });
+    }
+    if (this.state.getWebSockets().length >= 2) {
+      return new Response("room full", { status: 409 });
     }
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);

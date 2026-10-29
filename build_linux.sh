@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 VER="$(tr -d ' \r\n' < VERSION)"
 echo "Building DesktopToolkit ${VER} for Linux…"
 
-python3 -m pip install -r requirements.txt pyinstaller --quiet
+python3 -m pip install -r requirements.lock -r requirements-build.lock --quiet
 rm -rf build/linux dist/DesktopToolkit
 
 python3 -m PyInstaller --noconfirm --windowed --name DesktopToolkit \
@@ -31,12 +31,13 @@ python3 -m PyInstaller --noconfirm --windowed --name DesktopToolkit \
   --hidden-import file_organizer_ui \
   --hidden-import file_shredder \
   --hidden-import file_shredder_ui \
-  --hidden-import rustdesk_bridge \
   --hidden-import win_topmost \
   --hidden-import p2p_transfer \
   --hidden-import p2p_ui \
-  --hidden-import lan_remote \
-  --hidden-import remote_lan_ui \
+  --hidden-import transport_security \
+  --hidden-import cryptography.x509 \
+  --hidden-import cryptography.hazmat.primitives.ciphers.aead \
+  --hidden-import cryptography.hazmat.primitives.kdf.scrypt \
   --hidden-import pynput \
   --hidden-import PIL \
   --hidden-import ui_platform \

@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from lan_share import local_ipv4_addresses
+from lan_share import local_ipv4_addresses, request_windows_firewall_access
 
 
 def _fmt_size(n: int | float | None) -> str:
@@ -225,7 +225,8 @@ class FloatingLanBoard(QWidget):
         row2 = QHBoxLayout()
         row2.setSpacing(6)
         row2.addWidget(QLabel("密码"))
-        self.txt_pwd = QLineEdit("tool1234")
+        self.txt_pwd = QLineEdit()
+        self.txt_pwd.setPlaceholderText("至少 8 位访问密码")
         self.txt_pwd.setEchoMode(QLineEdit.EchoMode.Password)
         self.txt_pwd.setMaximumWidth(140)
         self.txt_pwd.setMaximumHeight(28)
@@ -247,9 +248,14 @@ class FloatingLanBoard(QWidget):
         self.btn_copy_link.setFixedHeight(28)
         self.btn_copy_link.setToolTip("复制本机分享地址，方便发给同一局域网的对方")
         self.btn_copy_link.clicked.connect(self._copy_share_link)
+        self.btn_firewall = QPushButton("放行防火墙", objectName="soft")
+        self.btn_firewall.setFixedHeight(28)
+        self.btn_firewall.setToolTip("无法从其他电脑连接时，管理员授权放行当前端口（仅限本地子网）")
+        self.btn_firewall.clicked.connect(self._repair_firewall)
         row2.addWidget(self.btn_start)
         row2.addWidget(self.btn_stop)
         row2.addWidget(self.btn_copy_link)
+        row2.addWidget(self.btn_firewall)
         row2.addStretch(1)
         s.addLayout(row2)
 
@@ -264,7 +270,6 @@ class FloatingLanBoard(QWidget):
         self.txt_client_pwd.setEchoMode(QLineEdit.EchoMode.Password)
         self.txt_client_pwd.setMaximumWidth(140)
         self.txt_client_pwd.setMaximumHeight(28)
-        self.txt_client_pwd.setText("tool1234")
         self.btn_conn = QPushButton("连接", objectName="soft")
         self.btn_conn.setFixedHeight(28)
         self.btn_conn.clicked.connect(self._connect)
@@ -484,7 +489,11 @@ class FloatingLanBoard(QWidget):
 
     def _refresh_status(self) -> None:
         ips = local_ipv4_addresses() or []
-        self.lbl_ips.setText("本机 IP: " + (", ".join(ips) if ips else "未知"))
+        if ips:
+            other = f"；其他网卡：{', '.join(ips[1:])}" if len(ips) > 1 else ""
+            self.lbl_ips.setText(f"推荐连接 IP：{ips[0]}{other}")
+        else:
+            self.lbl_ips.setText("本机 IP：未知")
         try:
             st = self.host.lan_server.status_text()
         except Exception:
@@ -509,12 +518,19 @@ class FloatingLanBoard(QWidget):
         self._persist_fields()
         msg = self.host.lan_server.start(
             self.txt_root.text().strip(),
-            self.txt_pwd.text().strip() or "tool1234",
+            self.txt_pwd.text().strip(),
             int(self.spin_port.value()),
         )
         self._set_status(msg)
         self._append_log(msg)
         self._refresh_status()
+        if getattr(self.host.lan_server, "running", False):
+            self._append_log("若其他电脑无法访问，请确认同一 Wi-Fi/网段，并点“放行防火墙”。")
+
+    def _repair_firewall(self) -> None:
+        msg = request_windows_firewall_access(int(self.spin_port.value()))
+        self._set_status(msg)
+        self._append_log(msg)
 
     def _stop_host(self) -> None:
         msg = self.host.lan_server.stop()
@@ -703,7 +719,7 @@ class FloatingLanBoard(QWidget):
         # Prefer real LAN IPs; 127.0.0.1 often fails to accept on some Windows setups
         ip = next((x for x in ips if not x.startswith("127.")), None) or (ips[0] if ips else "127.0.0.1")
         port = int(self.spin_port.value())
-        link = f"http://{ip}:{port}"
+        link = f"https://{ip}:{port}"
         try:
             QGuiApplication.clipboard().setText(link)
             tip = f"已复制分享地址：{link}（对方填 IP {ip}，端口 {port}，密码见上方）"

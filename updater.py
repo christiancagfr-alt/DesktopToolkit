@@ -16,13 +16,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Bump when shipping a new installer (keep in sync with VERSION file).
-APP_VERSION = "1.9.16"
+APP_VERSION = "1.9.17"
 
 # Public releases channel (personal account — matches where we publish builds)
 GITHUB_REPO = "christiancagfr-alt/DesktopToolkit"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_LIST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=10"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
+VERSION_FALLBACK_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/VERSION"
 
 
 def get_app_version() -> str:
@@ -71,18 +72,60 @@ def _http_json(url: str, *, timeout: float, user_agent: str) -> dict | list:
         return json.loads(resp.read().decode("utf-8", errors="replace"))
 
 
+def _http_text(url: str, *, timeout: float, user_agent: str) -> tuple[str, str]:
+    req = urllib.request.Request(
+        url,
+        headers={"Accept": "text/plain,text/html,*/*", "User-Agent": user_agent},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read(512 * 1024).decode("utf-8", errors="replace"), resp.geturl()
+
+
+def _synthetic_release_payload(version: str) -> dict:
+    """Build a release payload when GitHub's API is blocked but GitHub itself works."""
+    version = version.strip().lstrip("vV")
+    if not re.fullmatch(r"\d+(?:\.\d+){1,3}", version):
+        return {}
+    tag = f"v{version}"
+    base = f"https://github.com/{GITHUB_REPO}/releases/download/{tag}"
+    names = [
+        f"DesktopToolkit-{version}-windows-setup.exe",
+        f"DesktopToolkit-{version}-windows-portable.zip",
+        f"DesktopToolkit-{version}-macos.dmg",
+        f"DesktopToolkit-{version}-macos.zip",
+        f"DesktopToolkit-{version}-linux-x86_64.zip",
+    ]
+    assets = []
+    for name in names:
+        assets.append({"name": name, "browser_download_url": f"{base}/{name}"})
+        assets.append({"name": f"{name}.sha256", "browser_download_url": f"{base}/{name}.sha256"})
+    return {
+        "tag_name": tag,
+        "name": tag,
+        "html_url": f"https://github.com/{GITHUB_REPO}/releases/tag/{tag}",
+        "assets": assets,
+    }
+
+
 def _pick_release_payload(timeout: float, user_agent: str) -> dict:
     """
     Prefer /releases/latest, but also scan recent releases and take the
     highest non-prerelease tag — avoids stale 'latest' mirrors / flags.
     """
+    errors: list[str] = []
     latest_payload: dict = {}
     try:
         data = _http_json(RELEASES_API, timeout=timeout, user_agent=user_agent)
         if isinstance(data, dict):
             latest_payload = data
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError):
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        errors.append(f"API: {exc}")
         latest_payload = {}
+
+    # /releases/latest already excludes drafts and prereleases. Avoid a second
+    # request on every successful check; it made the old checker unnecessarily slow.
+    if latest_payload.get("tag_name"):
+        return latest_payload
 
     best = latest_payload
     best_ver = _normalize_version(
@@ -101,12 +144,40 @@ def _pick_release_payload(timeout: float, user_agent: str) -> dict:
                 if ver > best_ver:
                     best = item
                     best_ver = ver
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError):
-        pass
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        errors.append(f"列表 API: {exc}")
 
-    if not best:
-        raise RuntimeError("无法从 GitHub 获取发布信息（网络或接口失败）")
-    return best
+    if best:
+        return best
+
+    # Some networks block api.github.com but allow ordinary GitHub pages. Follow
+    # /releases/latest and read the redirected /tag/vX.Y.Z URL.
+    try:
+        html, final_url = _http_text(RELEASES_PAGE, timeout=timeout, user_agent=user_agent)
+        match = re.search(r"/releases/tag/(v?\d+(?:\.\d+){1,3})", final_url)
+        if not match:
+            match = re.search(r"/releases/tag/(v?\d+(?:\.\d+){1,3})", html)
+        if match:
+            payload = _synthetic_release_payload(match.group(1))
+            if payload:
+                return payload
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+        errors.append(f"发布页: {exc}")
+
+    # Final lightweight fallback on a separate GitHub host.
+    try:
+        text, _ = _http_text(VERSION_FALLBACK_URL, timeout=timeout, user_agent=user_agent)
+        payload = _synthetic_release_payload(text.strip())
+        if payload:
+            return payload
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+        errors.append(f"版本文件: {exc}")
+
+    detail = errors[-1] if errors else "未知网络错误"
+    raise RuntimeError(
+        "无法连接 GitHub（API、发布页和备用版本文件均失败）。"
+        f"请检查代理/防火墙或在浏览器打开 GitHub。最后错误：{detail}"
+    )
 
 
 def _select_asset(payload: dict) -> tuple[str, str, str]:

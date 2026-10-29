@@ -7,17 +7,19 @@ Architecture:
 
 Protocol (JSON text frames + binary frames):
   {"type":"hello","role":"send|recv","name":"..."}
-  {"type":"offer","name":"file.mp4","size":12345,"sha1":"..."}
+  {"type":"offer","name":"file.mp4","size":12345,"e2ee":"aesgcm-v1",...}
   {"type":"accept"} / {"type":"reject"}
   {"type":"chunk","index":0,"total":10}  + following binary payload
-  {"type":"done"}
+  {"type":"done","sha256":"...","proof":"..."}
   {"type":"error","message":"..."}
   {"type":"progress","index":0,"total":10}
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import secrets
 import tempfile
@@ -41,6 +43,43 @@ DEFAULT_SIGNAL_URL = ""
 CHUNK = 256 * 1024  # 256 KiB
 # Cloudflare Workers Free plan (account-wide, shared across all Workers)
 FREE_DAILY_REQUEST_LIMIT = 100_000
+E2EE_VERSION = "aesgcm-v1"
+
+
+def make_transfer_secret() -> str:
+    """Return a high-entropy secret that is never sent to the relay."""
+    return secrets.token_urlsafe(18)
+
+
+def _derive_transfer_key(secret: str, salt: bytes) -> bytes:
+    from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+
+    if len((secret or "").strip()) < 12:
+        raise ValueError("端到端加密密钥至少 12 位")
+    return Scrypt(salt=salt, length=32, n=2**15, r=8, p=1).derive(
+        secret.strip().encode("utf-8")
+    )
+
+
+def _json_bytes(payload: dict) -> bytes:
+    return json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _offer_aad(transfer_id: str) -> bytes:
+    return f"{E2EE_VERSION}\noffer\n{transfer_id}".encode("utf-8")
+
+
+def _chunk_aad(transfer_id: str, index: int, total: int) -> bytes:
+    return _json_bytes(
+        {"v": E2EE_VERSION, "transfer_id": transfer_id, "index": index, "total": total}
+    )
+
+
+def _done_proof(key: bytes, transfer_id: str, digest: str, size: int) -> str:
+    payload = f"done\n{transfer_id}\n{digest}\n{size}".encode("utf-8")
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
 
 
 def make_room_code(n: int = 8) -> str:
@@ -259,12 +298,14 @@ class P2PSession:
         self,
         signal_url: str,
         room: str,
+        encryption_secret: str,
         *,
         on_status: Callable[[str], None] | None = None,
         on_progress: Callable[[int, int, str], None] | None = None,
     ) -> None:
         self.signal_url = signal_url
         self.room = room.upper().strip()
+        self.encryption_secret = (encryption_secret or "").strip()
         self.on_status = on_status or (lambda m: None)
         self.on_progress = on_progress or (lambda a, b, c: None)
         self._stop = threading.Event()
@@ -321,20 +362,35 @@ class P2PSession:
         url = normalize_ws_url(self.signal_url, self.room)
         size = path.stat().st_size
         total = max(1, (size + CHUNK - 1) // CHUNK)
-        sha = hashlib.sha1()
+        sha256 = hashlib.sha256()
+        salt = secrets.token_bytes(16)
+        transfer_id = secrets.token_hex(16)
+        key = _derive_transfer_key(self.encryption_secret, salt)
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        cipher = AESGCM(key)
         self.on_status(f"连接中转… 房间 {self.room}")
         try:
             with ws_connect(url, open_timeout=20, max_size=CHUNK * 4) as ws:
-                hello = json.dumps({"type": "hello", "role": "send", "name": name})
-                offer = json.dumps(
-                    {
-                        "type": "offer",
-                        "name": name,
-                        "size": size,
-                        "chunks": total,
-                        "bundle": bool(is_bundle),
-                    }
+                hello = json.dumps({"type": "hello", "role": "send"})
+                private_offer = {
+                    "name": name,
+                    "size": size,
+                    "chunks": total,
+                    "bundle": bool(is_bundle),
+                }
+                offer_nonce = secrets.token_bytes(12)
+                sealed_offer = offer_nonce + cipher.encrypt(
+                    offer_nonce, _json_bytes(private_offer), _offer_aad(transfer_id)
                 )
+                offer_payload = {
+                    "type": "offer",
+                    "e2ee": E2EE_VERSION,
+                    "salt": base64.urlsafe_b64encode(salt).decode("ascii"),
+                    "transfer_id": transfer_id,
+                    "sealed": base64.urlsafe_b64encode(sealed_offer).decode("ascii"),
+                }
+                offer = json.dumps(offer_payload, ensure_ascii=False)
                 ws.send(hello)
                 self.on_status(
                     f"已进入房间 {self.room}，等待对方点「等待接收」…\n"
@@ -404,12 +460,33 @@ class P2PSession:
                             ws.send(json.dumps({"type": "error", "message": "cancelled"}))
                             return
                         chunk = f.read(CHUNK)
-                        sha.update(chunk)
-                        meta = json.dumps({"type": "chunk", "index": i, "total": total, "n": len(chunk)})
+                        sha256.update(chunk)
+                        nonce = secrets.token_bytes(12)
+                        encrypted = nonce + cipher.encrypt(
+                            nonce, chunk, _chunk_aad(transfer_id, i, total)
+                        )
+                        meta = json.dumps(
+                            {
+                                "type": "chunk",
+                                "index": i,
+                                "total": total,
+                                "n": len(encrypted),
+                                "e2ee": E2EE_VERSION,
+                            }
+                        )
                         ws.send(meta)
-                        ws.send(chunk)
+                        ws.send(encrypted)
                         self.on_progress(i + 1, total, name)
-                ws.send(json.dumps({"type": "done", "sha1": sha.hexdigest()}))
+                digest = sha256.hexdigest()
+                ws.send(
+                    json.dumps(
+                        {
+                            "type": "done",
+                            "sha256": digest,
+                            "proof": _done_proof(key, transfer_id, digest, size),
+                        }
+                    )
+                )
                 self.on_status(f"✅ 发送完成：{name}")
         except Exception as exc:
             err = str(exc)
@@ -481,10 +558,37 @@ class P2PSession:
                         "④ 若为 false：cd cloudflare && npx wrangler deploy 后重试"
                     )
                     return
-                name = Path(str(offer.get("name") or "received.bin")).name
-                size = int(offer.get("size") or 0)
-                total = int(offer.get("chunks") or 1)
-                is_bundle = bool(offer.get("bundle"))
+                if offer.get("e2ee") != E2EE_VERSION:
+                    self.on_status("拒绝接收：对方版本不支持端到端加密")
+                    ws.send(json.dumps({"type": "reject"}))
+                    return
+                try:
+                    salt = base64.urlsafe_b64decode(str(offer.get("salt") or ""))
+                    transfer_id = str(offer.get("transfer_id") or "")
+                    key = _derive_transfer_key(self.encryption_secret, salt)
+                    if len(transfer_id) != 32:
+                        raise ValueError("传输标识无效")
+                    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+                    cipher = AESGCM(key)
+                    sealed = base64.urlsafe_b64decode(str(offer.get("sealed") or ""))
+                    if len(sealed) < 28:
+                        raise ValueError("加密握手无效")
+                    private_offer = json.loads(
+                        cipher.decrypt(
+                            sealed[:12], sealed[12:], _offer_aad(transfer_id)
+                        ).decode("utf-8")
+                    )
+                    name = Path(str(private_offer.get("name") or "received.bin")).name
+                    size = int(private_offer.get("size") or 0)
+                    total = int(private_offer.get("chunks") or 1)
+                    is_bundle = bool(private_offer.get("bundle"))
+                    if size < 0 or total != max(1, (size + CHUNK - 1) // CHUNK):
+                        raise ValueError("文件大小或分块数量无效")
+                except Exception:
+                    self.on_status("拒绝接收：端到端加密密钥错误或握手被篡改")
+                    ws.send(json.dumps({"type": "reject"}))
+                    return
                 self.on_status(f"对方要发送：{name} ({size} 字节)，开始接收…")
                 ws.send(json.dumps({"type": "accept"}))
 
@@ -493,12 +597,16 @@ class P2PSession:
                 if out_path.exists():
                     stem, suf = out_path.stem, out_path.suffix
                     out_path = dest_dir / f"{stem}_recv{suf}"
-                sha = hashlib.sha1()
+                sha256 = hashlib.sha256()
+                received = 0
+                done_meta = None
+                transfer_ok = False
                 with out_path.open("wb") as f:
                     idx_expect = 0
                     while idx_expect < total:
                         if self._stop.is_set():
-                            return
+                            self.on_status("接收已取消")
+                            break
                         try:
                             meta_raw = ws.recv(timeout=60)
                         except Exception as exc:
@@ -506,20 +614,21 @@ class P2PSession:
                                 f"接收中断：{exc}\n"
                                 "可能是网络不稳、对方取消，或中转连接断开。请双方重试。"
                             )
-                            return
+                            break
                         if isinstance(meta_raw, bytes):
-                            # unexpected binary without meta
-                            f.write(meta_raw)
-                            sha.update(meta_raw)
-                            idx_expect += 1
-                            self.on_progress(idx_expect, total, name)
-                            continue
-                        meta = json.loads(meta_raw)
+                            self.on_status("协议错误：数据块缺少元信息")
+                            break
+                        try:
+                            meta = json.loads(meta_raw)
+                        except (TypeError, ValueError):
+                            self.on_status("协议错误：分块元信息不是有效 JSON")
+                            break
                         t = meta.get("type")
                         if t == "error":
                             self.on_status(f"对方取消：{meta.get('message')}")
-                            return
+                            break
                         if t == "done":
+                            self.on_status("协议错误：文件尚未完整就收到完成消息")
                             break
                         if t != "chunk":
                             continue
@@ -527,14 +636,69 @@ class P2PSession:
                             blob = ws.recv(timeout=60)
                         except Exception as exc:
                             self.on_status(f"读数据块失败：{exc}")
-                            return
+                            break
                         if not isinstance(blob, (bytes, bytearray)):
                             self.on_status("协议错误：期望二进制块")
-                            return
-                        f.write(blob)
-                        sha.update(blob)
-                        idx_expect = int(meta.get("index") or idx_expect) + 1
+                            break
+                        try:
+                            index = int(meta.get("index", -1))
+                            declared_n = int(meta.get("n", -1))
+                        except (TypeError, ValueError):
+                            self.on_status("协议错误：分块序号或长度不是整数")
+                            break
+                        if (
+                            index != idx_expect
+                            or declared_n != len(blob)
+                            or meta.get("e2ee") != E2EE_VERSION
+                            or len(blob) > CHUNK + 28
+                            or len(blob) < 28
+                        ):
+                            self.on_status("协议错误：分块序号或长度无效")
+                            break
+                        try:
+                            nonce = bytes(blob[:12])
+                            plaintext = cipher.decrypt(
+                                nonce,
+                                bytes(blob[12:]),
+                                _chunk_aad(transfer_id, index, total),
+                            )
+                        except Exception:
+                            self.on_status("端到端解密失败：密钥错误或数据被篡改")
+                            break
+                        if len(plaintext) > CHUNK or received + len(plaintext) > size:
+                            self.on_status("协议错误：接收数据超过声明大小")
+                            break
+                        f.write(plaintext)
+                        sha256.update(plaintext)
+                        received += len(plaintext)
+                        idx_expect += 1
                         self.on_progress(idx_expect, total, name)
+                    if idx_expect == total and received == size:
+                        try:
+                            final_raw = ws.recv(timeout=30)
+                            if not isinstance(final_raw, str):
+                                raise ValueError("完成消息格式错误")
+                            done_meta = json.loads(final_raw)
+                            if done_meta.get("type") != "done":
+                                raise ValueError("缺少完成消息")
+                            expected = str(done_meta.get("sha256") or "").lower()
+                            proof = str(done_meta.get("proof") or "").lower()
+                            transfer_ok = (
+                                bool(expected)
+                                and secrets.compare_digest(expected, sha256.hexdigest())
+                                and secrets.compare_digest(
+                                    proof, _done_proof(key, transfer_id, expected, size)
+                                )
+                            )
+                        except Exception as exc:
+                            self.on_status(f"完整性校验失败：{exc}")
+                if not transfer_ok:
+                    try:
+                        out_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    self.on_status("接收失败：文件不完整或校验值不匹配，已删除残缺文件")
+                    return
                 if is_bundle and out_path.suffix.lower() == ".zip":
                     extract_dir = dest_dir / out_path.stem
                     n = 1

@@ -131,15 +131,45 @@ def _host_matches(host: str, *domains: str) -> bool:
     return False
 
 
+def _is_public_http_url(url: str) -> bool:
+    """Reject loopback/private/link-local destinations, including DNS answers."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    cleaned = _normalize_http_url(url)
+    if not cleaned:
+        return False
+    host = urlparse(cleaned).hostname or ""
+    try:
+        answers = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    for answer in answers:
+        try:
+            ip = ipaddress.ip_address(answer[4][0].split("%", 1)[0])
+        except ValueError:
+            return False
+        if not ip.is_global:
+            return False
+    return bool(answers)
+
+
 def fetch_link_title(url: str) -> str:
     """Best-effort page/sheet title for hyperlink display text."""
     import html as html_lib
     import urllib.request
 
     cleaned = _normalize_http_url(url)
-    if not cleaned:
+    if not cleaned or not _is_public_http_url(cleaned):
         return ""
     try:
+        class PublicRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                if not _is_public_http_url(newurl):
+                    raise ValueError("拒绝跳转到本机或私有网络地址")
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+
         req = urllib.request.Request(
             cleaned,
             headers={
@@ -150,7 +180,8 @@ def fetch_link_title(url: str) -> str:
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             },
         )
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        opener = urllib.request.build_opener(PublicRedirectHandler())
+        with opener.open(req, timeout=8) as resp:
             raw = resp.read(120_000)
         text = raw.decode("utf-8", errors="replace")
         title = ""

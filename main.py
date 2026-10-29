@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import traceback
@@ -61,7 +62,6 @@ class ToolkitApp(QObject):
         self.recorder_board = None
         self.p2p_board = None
         self.lan_board = None
-        self.remote_board = None
         self.clean_board = None
         self.alarm_board = None
         self.todo_board = None
@@ -517,13 +517,6 @@ class ToolkitApp(QObject):
         self.lan_board.raise_()
         self.lan_board._refresh_status()
 
-    def show_remote_control(self) -> None:
-        """Remote control is withheld from release builds until the feature matures."""
-        try:
-            self.announce("远程控制仍在开发中，当前版本暂未开放")
-        except Exception:
-            pass
-
     def start_deep_clean(self, scopes: list[str] | None = None) -> None:
         if self._cleaning:
             self.announce("正在清理中，请稍候")
@@ -808,7 +801,9 @@ def main() -> int:
     try:
         from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
-        key = "DesktopToolkit-single-instance"
+        # Test/portable builds may use an isolated key without interrupting an
+        # already-installed copy. Normal launches keep the stable default.
+        key = os.environ.get("DESKTOP_TOOLKIT_INSTANCE_KEY", "DesktopToolkit-single-instance")
         probe = QLocalSocket()
         probe.connectToServer(key)
         if probe.waitForConnected(200):

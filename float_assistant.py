@@ -435,14 +435,6 @@ class FloatingAssistant(QWidget):
             pass
         self.menu.hide()
 
-    def _act_remote(self) -> None:
-        self._tip("打开远程控制")
-        try:
-            self.host.show_remote_control()
-        except Exception:
-            pass
-        self.menu.hide()
-
     def _act_pomo(self) -> None:
         self._tip("打开番茄钟")
         self.host.show_pomodoro()

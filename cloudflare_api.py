@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -21,6 +23,8 @@ _NODE_LTS_VER = "v22.14.0"
 _NODE_WIN_ZIP = (
     f"https://nodejs.org/dist/{_NODE_LTS_VER}/node-{_NODE_LTS_VER}-win-x64.zip"
 )
+_NODE_WIN_ZIP_SHA256 = "55b639295920b219bb2acbcfa00f90393a2789095b7323f79475c9f34795f217"
+_WRANGLER_VERSION = "4.154.0"
 
 
 def normalize_token(token: str) -> str:
@@ -367,7 +371,13 @@ def _resolve_node_bins() -> tuple[Path, Path, Path] | None:
     return None
 
 
-def _download_file(url: str, dest: Path, *, on_log: Callable[[str], None] | None = None) -> None:
+def _download_file(
+    url: str,
+    dest: Path,
+    *,
+    expected_sha256: str = "",
+    on_log: Callable[[str], None] | None = None,
+) -> None:
     def log(msg: str) -> None:
         if on_log:
             try:
@@ -394,6 +404,11 @@ def _download_file(url: str, dest: Path, *, on_log: Callable[[str], None] | None
             done += len(chunk)
             if total > 0 and done % (1024 * 1024 * 5) < 256 * 1024:
                 log(f"下载中… {done // (1024 * 1024)} / {total // (1024 * 1024)} MB")
+    if expected_sha256:
+        digest = hashlib.sha256(tmp.read_bytes()).hexdigest()
+        if not secrets.compare_digest(digest, expected_sha256.lower()):
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError("下载文件 SHA-256 校验失败，已拒绝执行")
     tmp.replace(dest)
     log(f"已下载：{dest.name}")
 
@@ -424,7 +439,12 @@ def _install_node_portable(on_log: Callable[[str], None] | None = None) -> tuple
     log(f"未检测到 Node/npm，正在自动安装便携版 {_NODE_LTS_VER}…")
     zip_path = tools / f"{folder_name}.zip"
     try:
-        _download_file(_NODE_WIN_ZIP, zip_path, on_log=on_log)
+        _download_file(
+            _NODE_WIN_ZIP,
+            zip_path,
+            expected_sha256=_NODE_WIN_ZIP_SHA256,
+            on_log=on_log,
+        )
     except Exception as e:
         # winget fallback
         winget = shutil.which("winget")
@@ -615,7 +635,7 @@ def deploy_signaling_worker(
         log("检查 Cloudflare 登录状态…")
         try:
             who = _run_npx(
-                node, npx, ["--yes", "wrangler@4", "whoami"], cwd=cf, env=env, timeout=180
+                node, npx, ["--yes", f"wrangler@{_WRANGLER_VERSION}", "whoami"], cwd=cf, env=env, timeout=180
             )
         except FileNotFoundError as e:
             raise RuntimeError(
@@ -637,7 +657,7 @@ def deploy_signaling_worker(
         if need_login:
             log("未登录 Cloudflare，请在弹出的浏览器中完成登录…")
             login = _run_npx(
-                node, npx, ["--yes", "wrangler@4", "login"], cwd=cf, env=env, timeout=600
+                node, npx, ["--yes", f"wrangler@{_WRANGLER_VERSION}", "login"], cwd=cf, env=env, timeout=600
             )
             if login.returncode != 0:
                 raise RuntimeError(
@@ -649,7 +669,7 @@ def deploy_signaling_worker(
     log("正在 wrangler deploy…（首次会自动下载 wrangler，可能需 1–2 分钟）")
     try:
         dep = _run_npx(
-            node, npx, ["--yes", "wrangler@4", "deploy"], cwd=cf, env=env, timeout=900
+            node, npx, ["--yes", f"wrangler@{_WRANGLER_VERSION}", "deploy"], cwd=cf, env=env, timeout=900
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError("wrangler deploy 超时。请检查网络后重试。")

@@ -2,7 +2,7 @@
 ; Builds a double-click Setup.exe from dist\DesktopToolkit\
 
 #define MyAppName "Desktop Toolkit"
-#define MyAppVersion "1.9.16"
+#define MyAppVersion "1.9.17"
 #define MyAppPublisher "Desktop Toolkit"
 #define MyAppURL "https://github.com/christiancagfr-alt/DesktopToolkit"
 #define MyAppExeName "DesktopToolkit.exe"
@@ -47,6 +47,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
 Name: "autostart"; Description: "Start with Windows"; GroupDescription: "Startup:"; Flags: unchecked
 Name: "shredmenu"; Description: "Add Explorer right-click: Shred with Desktop Toolkit"; GroupDescription: "Shell integration:"; Flags: checkedonce
+Name: "lanfirewall"; Description: "Allow LAN file sharing through Windows Firewall (local subnet only)"; GroupDescription: "Network:"; Flags: checkedonce
 
 [Files]
 ; Full onedir PyInstaller tree
@@ -100,7 +101,21 @@ Filename: "{tmp}\vc_redist.x64.exe"; \
   Flags: shellexec waituntilterminated; \
   Check: NeedsVCRedist; \
   Verb: runas
+; Without an inbound rule, another PC times out even while the UI says sharing is running.
+Filename: "{sys}\netsh.exe"; \
+  Parameters: "advfirewall firewall add rule name=""Desktop Toolkit LAN Share 8765"" dir=in action=allow protocol=TCP localport=8765 remoteip=LocalSubnet profile=any enable=yes"; \
+  StatusMsg: "Allowing LAN file sharing through Windows Firewall..."; \
+  Flags: shellexec waituntilterminated runhidden; \
+  Tasks: lanfirewall; \
+  Verb: runas
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "{sys}\netsh.exe"; \
+  Parameters: "advfirewall firewall delete rule name=""Desktop Toolkit LAN Share 8765"""; \
+  Flags: shellexec waituntilterminated runhidden; \
+  RunOnceId: "RemoveLanFirewallRule"; \
+  Verb: runas
 
 [Code]
 function NeedsVCRedist: Boolean;

@@ -22,7 +22,6 @@ OPENWEATHER_CURRENT = "https://api.openweathermap.org/data/2.5/weather"
 IP_LOCATE_ENDPOINTS = (
     "https://ipapi.co/json/",
     "https://ipinfo.io/json",
-    "http://ip-api.com/json/?fields=status,message,country,regionName,city,lat,lon",
 )
 
 
